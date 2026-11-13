@@ -82,12 +82,15 @@ class ProcessMonitor(Monitor):
             "cmdline": info.command[:2000], "user": info.username, "parent_name": info.parent_name,
             "parent_exe": info.parent_exe, "create_time": info.create_time,
         }
-        dropped = any(i.id == "proc.dropped_file_executed" for i in indicators)
+        dropped = any(i.id in ("proc.dropped_file_executed", "proc.dropped_script_executed") for i in indicators)
         location = classify_location(info.exe, self.ctx.platform) if info.exe else "other"
         if info.exe and (dropped or indicators) and location not in ("system", "program") and os.path.isfile(info.exe):
             report = self.ctx.analyzer.analyze(info.exe)
             details["sha256"] = report.sha256
             indicators.extend(i for i in report.indicators if i.id.startswith(_IMAGE_FINDINGS))
+            if dropped and report.score >= 40 and not any(i.floor for i in indicators):
+                floor = Severity.CRITICAL if report.score >= 90 else Severity.HIGH
+                indicators.append(Indicator("proc.dropped_file_flagged", 0, "The dropped file itself looked suspicious when examined", "T1204.002", floor))
         if not indicators and not cfg.record_all:
             return
         score, severity = summarize(indicators)

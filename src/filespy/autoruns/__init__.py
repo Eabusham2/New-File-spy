@@ -84,8 +84,12 @@ def label(category: str) -> str:
     return CATEGORIES.get(category, (45, category.replace("_", " "), ""))[1]
 
 
-def score_entry(entry: AutorunEntry, ctx: Context, action: str = "added", added_text: str = "") -> list[Indicator]:
-    """Why a new or changed autostart entry deserves attention."""
+def score_entry(entry: AutorunEntry, ctx: Context, action: str = "added", added_text: str = "", deep: bool = True) -> list[Indicator]:
+    """Why a new or changed autostart entry deserves attention.
+
+    With ``deep`` off (used when auditing hundreds of existing entries) only targets in
+    temporary or user-writable folders are opened and examined.
+    """
     base, text, mitre = CATEGORIES.get(entry.category, (45, entry.category.replace("_", " "), ""))
     verb = "was added" if action == "added" else "was changed"
     out = [Indicator(f"autorun.{entry.category}", base, f"A {text} {verb}; it runs automatically", mitre)]
@@ -105,7 +109,8 @@ def score_entry(entry: AutorunEntry, ctx: Context, action: str = "added", added_
             floor = Severity.CRITICAL if drop.score >= 90 else None
             out.append(Indicator("autorun.target_dropped", 40 if drop.score >= 40 else 30,
                                  "The program it starts is a file that was dropped while FileSpy was watching", "T1547", floor))
-        if ctx.analyzer is not None and location != "system" and os.path.isfile(target):
+        wanted = location != "system" if deep else location in ("temp", "user_writable", "startup")
+        if ctx.analyzer is not None and wanted and os.path.isfile(target):
             report = ctx.analyzer.analyze(target)
             out.extend(i for i in report.indicators if i.id.startswith(_IMAGE_FINDINGS))
     return out

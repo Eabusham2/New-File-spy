@@ -43,6 +43,7 @@ class SharedState:
         self._max_drops = max_drops
         self._drop_ttl = drop_ttl
         self.own_pid = os.getpid()
+        self.started = time.time()
 
     # -- dropped files --------------------------------------------------------
     def note_drop(self, path: str, sha256: str = "", event_id: str = "", score: int = 0) -> None:

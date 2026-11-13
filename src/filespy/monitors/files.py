@@ -224,6 +224,11 @@ class FileMonitor(Monitor):
 
     # -- intake ---------------------------------------------------------------
     def _push(self, kind: str, path: str, dest: str) -> None:
+        """Called on the watchdog thread for every file-system event."""
+        fresh = path if kind == "created" else dest if kind == "moved" else ""
+        if fresh and not self._excluded(fresh):
+            # Remember it at once: a dropper often runs its payload within milliseconds.
+            self.ctx.state.note_drop(fresh)
         try:
             self._queue.put_nowait((kind, path, dest))
         except queue.Full:
@@ -292,8 +297,7 @@ class FileMonitor(Monitor):
             self._lost += 1
             return
         self._pending[path] = _Pending(action, now, now, renamed_from)
-        if action != "modified":
-            # Remember it straight away: a dropper often runs its payload within a second.
+        if action != "modified" and self.ctx.state.lookup_drop(path) is None:
             self.ctx.state.note_drop(path)
 
     def _walk_new_dir(self, folder: str, now: float) -> None:

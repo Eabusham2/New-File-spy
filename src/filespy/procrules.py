@@ -221,6 +221,14 @@ def lookalike_of(name: str) -> str:
     return ""
 
 
+def _created_since(path: str, moment: float) -> bool:
+    try:
+        info = os.stat(path)
+    except (OSError, ValueError):
+        return False
+    return max(info.st_ctime, info.st_mtime) >= moment
+
+
 def _platform_tag(platform: str) -> set[str]:
     if platform == "win32":
         return {"win", "any"}
@@ -259,8 +267,14 @@ def evaluate(
     location = classify_location(exe, platform) if exe else "other"
 
     drop = state.lookup_drop(exe.removesuffix(" (deleted)")) if exe and state is not None else None
-    if drop is not None:
-        floor = C if drop.score >= 90 else H if drop.score >= 40 else None
+    dropped = drop is not None
+    if not dropped and state is not None and exe and location not in ("system", "program"):
+        # The file monitor may not have reported it yet (or the folder is not watched):
+        # a program file created after FileSpy started is a drop all the same.
+        dropped = _created_since(exe, state.started)
+    if dropped:
+        score = drop.score if drop is not None else 0
+        floor = C if score >= 90 else H if score >= 40 else None
         out.append(Indicator("proc.dropped_file_executed", 50,
                              "This program is a file that was dropped while FileSpy was watching", "T1204.002", floor))
     elif location == "temp":
@@ -269,7 +283,7 @@ def evaluate(
         out.append(Indicator("proc.image_in_startup", 25, "The program is running from a startup location", "T1547.001"))
     elif location == "user_writable":
         out.append(Indicator("proc.image_user_writable", 10, "The program is running from a user-writable folder", ""))
-    if drop is None and exe and location in ("temp", "user_writable", "startup", "other") and young_minutes > 0:
+    if not dropped and exe and location in ("temp", "user_writable", "startup", "other") and young_minutes > 0:
         try:
             info = os.stat(exe)
             age = (now or time.time()) - max(info.st_mtime, info.st_ctime)
@@ -277,6 +291,19 @@ def evaluate(
                 out.append(Indicator("proc.young_image", 20, "The program file was created or changed only minutes ago", "T1204.002"))
         except OSError:
             pass
+    if state is not None and not dropped:
+        for argument in proc.cmdline[1:6]:
+            # A dropped script is run by an interpreter, so it shows up as an argument, not as the image.
+            if len(argument) > 2 and os.path.isabs(argument) and (
+                state.lookup_drop(argument) is not None
+                or (fileinfo.extension(argument) in fileinfo.RISKY_EXTS and _created_since(argument, state.started))
+            ):
+                record = state.lookup_drop(argument)
+                score = record.score if record is not None else 0
+                floor = C if score >= 90 else H if score >= 40 else None
+                out.append(Indicator("proc.dropped_script_executed", 45,
+                                     "It is running a script that was dropped while FileSpy was watching", "T1204.002", floor))
+                break
     if platform != "win32" and exe and (exe.endswith(" (deleted)") or exe.startswith(("memfd:", "/memfd:"))):
         out.append(Indicator("proc.deleted_image", 55, "The program deleted its own file after starting, or runs only from memory", "T1070.004"))
 

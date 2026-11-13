@@ -162,6 +162,7 @@ def test_dropped_file_executed_and_young_image(tmp_path):
     exe = tmp_path / "payload"
     exe.write_bytes(b"x")
     state = SharedState()
+    state.started = exe.stat().st_mtime + 3600  # the file predates the session
     proc = ProcInfo(10, "payload", str(exe), [str(exe)])
     fresh = evaluate(proc, L, state)
     assert "proc.dropped_file_executed" not in ids(fresh) and "proc.young_image" in ids(fresh)
@@ -174,6 +175,33 @@ def test_dropped_file_executed_and_young_image(tmp_path):
     assert summarize(evaluate(proc, L, state))[1] is Severity.CRITICAL
     old = evaluate(proc, L, None, now=exe.stat().st_mtime + 86400)
     assert "proc.young_image" not in ids(old)
+
+
+def test_file_created_during_the_session_counts_as_dropped_even_before_it_is_reported(tmp_path):
+    exe = tmp_path / "payload"
+    exe.write_bytes(b"x")
+    state = SharedState()
+    state.started = exe.stat().st_mtime - 5  # created after FileSpy started; no file event yet
+    assert "proc.dropped_file_executed" in ids(evaluate(ProcInfo(10, "payload", str(exe), [str(exe)]), L, state))
+    system = ProcInfo(11, "ls", "/usr/bin/ls", ["/usr/bin/ls"])
+    state.started = 0.0
+    assert evaluate(system, L, state) == []  # system folders are never treated as drops
+
+
+def test_dropped_script_run_by_an_interpreter(tmp_path):
+    script = tmp_path / "stage2.sh"
+    script.write_text("#!/bin/sh\nsleep 1\n")
+    state = SharedState()
+    state.started = script.stat().st_mtime + 3600
+    proc = ProcInfo(12, "sh", "/bin/sh", ["/bin/sh", str(script)])
+    assert evaluate(proc, L, state) == []
+    state.note_drop(str(script), "abc", "ev", score=20)
+    assert ids(evaluate(proc, L, state)) == {"proc.dropped_script_executed"}
+    state.forget_drop(str(script))
+    state.started = script.stat().st_mtime - 5
+    assert "proc.dropped_script_executed" in ids(evaluate(proc, L, state))
+    relative = ProcInfo(13, "sh", "/bin/sh", ["/bin/sh", "stage2.sh"])
+    assert evaluate(relative, L, state) == []
 
 
 def test_deleted_image_on_linux():
