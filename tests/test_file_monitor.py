@@ -185,3 +185,70 @@ def test_monitor_fails_cleanly_without_folders(make_ctx):
     monitor.start()
     assert monitor.ready.wait(5) and monitor.failed
     assert ctx.bus.find("system", "error")
+
+
+def test_noisy_change_events_do_not_delay_examination(make_ctx, tmp_path):
+    """Windows can report a change every time a file is merely looked at; that must not postpone the report."""
+    import threading
+
+    watched = tmp_path / "w"
+    watched.mkdir()
+    ctx = make_ctx(files__settle_seconds=0.2, files__max_settle_seconds=60.0)
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    target = watched / "noisy.exe"
+    stop = threading.Event()
+
+    def noise():
+        while not stop.wait(0.02):
+            monitor._push("modified", str(target), "")
+
+    thread = threading.Thread(target=noise, daemon=True)
+    try:
+        assert monitor.ready.wait(10)
+        thread.start()
+        target.write_bytes(make_pe())
+        started = time.monotonic()
+        assert wait_for(lambda: file_events(ctx, "created"), 10), "examination was postponed by change events"
+        assert time.monotonic() - started < 8
+        time.sleep(1.0)  # the noise continues: it must not cause repeat reports either
+        assert len([e for e in file_events(ctx) if "noisy.exe" in e.subject]) == 1
+    finally:
+        stop.set()
+        thread.join()
+        monitor.stop()
+        monitor.join()
+
+
+def test_unreadable_file_is_retried_then_reported(make_ctx, tmp_path):
+    from filespy.analyzer import FileReport
+
+    watched = tmp_path / "w"
+    watched.mkdir()
+    ctx = make_ctx()
+    ctx.config.files.paths = [str(watched)]
+    real = ctx.analyzer.analyze
+    failures = {"left": 2}
+
+    def flaky(path):
+        if path.endswith("locked.exe") or failures["left"] > 0:
+            failures["left"] -= 1
+            return FileReport(path=path, ext="exe", error="cannot read: Permission denied")
+        return real(path)
+
+    ctx.analyzer.analyze = flaky
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        (watched / "slow.exe").write_bytes(make_pe())
+        recovered = wait_for(lambda: [e for e in file_events(ctx) if "slow.exe" in e.subject], 20)
+        assert recovered and recovered[0].details["kind"] == "pe", "a file that became readable was not reported"
+        (watched / "locked.exe").write_bytes(make_pe())
+        blocked = wait_for(lambda: [e for e in file_events(ctx) if "locked.exe" in e.subject], 30)
+        assert blocked and any(i.id == "file.unreadable" for i in blocked[0].indicators)
+        assert ctx.state.lookup_drop(str(watched / "locked.exe")) is not None  # still remembered for correlation
+    finally:
+        monitor.stop()
+        monitor.join()

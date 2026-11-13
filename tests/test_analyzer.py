@@ -166,10 +166,13 @@ def test_ordinary_files_are_quiet(tmp_path):
 
 def test_own_rule_file_is_not_flagged(tmp_path):
     from filespy.rules import builtin_rules_text
-    target = tmp_path / "rules.json"
-    target.write_text(builtin_rules_text(), encoding="utf-8")
-    report = FileAnalyzer().analyze(str(target))
-    assert not report.indicators and report.details.get("allowlisted")
+    analyzer = FileAnalyzer()
+    text = builtin_rules_text().replace("\r\n", "\n")
+    for name, body in (("unix.json", text), ("windows.json", text.replace("\n", "\r\n"))):
+        target = tmp_path / name
+        target.write_bytes(body.encode("utf-8"))  # a checkout may use either kind of line ending
+        report = analyzer.analyze(str(target))
+        assert not report.indicators and report.details.get("allowlisted"), name
 
 
 def test_never_follows_links_or_opens_special_files(tmp_path):

@@ -40,6 +40,8 @@ KIND_LABELS = {
 MAX_PENDING = 20000
 MAX_QUEUE = 100000
 MAX_DIR_WALK = 5000
+MAX_READ_RETRIES = 4
+RECHECK_COOLDOWN = 2.0  # seconds before an unchanged, already examined file is looked at again
 
 
 def kind_label(report: FileReport) -> str:
@@ -48,14 +50,23 @@ def kind_label(report: FileReport) -> str:
     return KIND_LABELS.get(report.kind, "file")
 
 
+def _signature(path: str) -> tuple[int, int] | None:
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return None
+    return info.st_size, info.st_mtime_ns
+
+
 @dataclass
 class _Pending:
     action: str  # created | renamed | modified
     first_seen: float
-    last_event: float
+    checked: float  # when the size and time of the file were last looked at
     renamed_from: str = ""
     signature: tuple[int, int] | None = None
     closed: bool = False
+    not_before: float = 0.0
 
 
 class PollingScanner:
@@ -172,6 +183,8 @@ class FileMonitor(Monitor):
         self._pending: dict[str, _Pending] = {}
         self._inflight: set[str] = set()
         self._recent: OrderedDict[str, tuple[int, int]] = OrderedDict()
+        self._checked: dict[str, float] = {}
+        self._retries: dict[str, int] = {}
         self._burst: deque[tuple[float, str, str]] = deque()
         self._burst_quiet_until = 0.0
         self._lost = 0
@@ -198,6 +211,15 @@ class FileMonitor(Monitor):
         """Watch every root we can in real time; return the roots that must be polled instead."""
         handler = _Handler(self._push)
         failed: list[str] = []
+        if os.name == "nt":
+            # Do not ask Windows for last-access notifications: merely looking at a file changes
+            # its access time, so every check of ours would come back as another change event.
+            try:
+                from watchdog.observers import winapi
+
+                winapi.WATCHDOG_FILE_NOTIFY_FLAGS &= ~0x20  # FILE_NOTIFY_CHANGE_LAST_ACCESS
+            except Exception:  # noqa: BLE001 - internal detail of watchdog; the settle logic copes without it
+                log.debug("could not adjust watchdog notify flags", exc_info=True)
         try:
             observer = Observer()
             observer.start()
@@ -269,6 +291,10 @@ class FileMonitor(Monitor):
             return
         if kind == "created":
             self._add_pending(path, "created", now)
+        elif kind.startswith("retry:"):
+            # The file could not be read a moment ago (still locked by its writer or by a scanner).
+            self._recent.pop(path, None)
+            self._add_pending(path, kind[6:], now, dest, not_before=now + 0.5 * self._retries.get(path, 1))
         elif kind == "dir":
             self._walk_new_dir(path, now)
         elif kind == "closed":
@@ -276,27 +302,23 @@ class FileMonitor(Monitor):
             if pending is not None:
                 pending.closed = True
         elif kind == "modified":
-            pending = self._pending.get(path)
-            if pending is not None:
-                pending.last_event = now
-                return
+            if path in self._pending:
+                return  # already waiting; the settle check looks at the file itself
             ext = fileinfo.extension(path)
             if ext in fileinfo.DECOY_EXTS:
                 self._burst.append((now, path, ext))
             if ext in fileinfo.RISKY_EXTS or self.ctx.state.lookup_drop(path) is not None:
-                self._add_pending(path, "modified", now)
+                self._add_pending(path, "modified", now, not_before=self._checked.get(path, 0.0) + RECHECK_COOLDOWN)
         elif kind == "deleted":
             self._on_deleted(path)
 
-    def _add_pending(self, path: str, action: str, now: float, renamed_from: str = "") -> None:
-        pending = self._pending.get(path)
-        if pending is not None:
-            pending.last_event = now
+    def _add_pending(self, path: str, action: str, now: float, renamed_from: str = "", not_before: float = 0.0) -> None:
+        if path in self._pending:
             return
         if len(self._pending) >= MAX_PENDING:
             self._lost += 1
             return
-        self._pending[path] = _Pending(action, now, now, renamed_from)
+        self._pending[path] = _Pending(action, now, now, renamed_from, _signature(path), not_before=not_before)
         if action != "modified" and self.ctx.state.lookup_drop(path) is None:
             self.ctx.state.note_drop(path)
 
@@ -326,6 +348,8 @@ class FileMonitor(Monitor):
     def _on_deleted(self, path: str) -> None:
         pending = self._pending.pop(path, None)
         self._recent.pop(path, None)
+        self._checked.pop(path, None)
+        self._retries.pop(path, None)
         name = sanitize.clean(basename(path), 120)
         if pending is not None and pending.action != "modified":
             self.ctx.state.forget_drop(path)
@@ -341,27 +365,30 @@ class FileMonitor(Monitor):
 
     # -- examination ----------------------------------------------------------
     def _settle(self, now: float) -> None:
+        """Examine files whose size and modification time have stopped changing.
+
+        Stability is judged by looking at the file, not by the absence of change events:
+        on some systems our own look at a file produces another event for it.
+        """
         cfg = self.ctx.config.files
         for path, pending in list(self._pending.items()):
-            if path in self._inflight:
+            if path in self._inflight or now < pending.not_before:
                 continue
-            quiet = now - pending.last_event
-            waited = now - pending.first_seen
-            if not pending.closed and quiet < cfg.settle_seconds and waited < cfg.max_settle_seconds:
+            forced = pending.closed or now - pending.first_seen >= cfg.max_settle_seconds
+            if not forced and now - pending.checked < cfg.settle_seconds:
                 continue
-            try:
-                info = os.lstat(path)
-                signature = (info.st_size, info.st_mtime_ns)
-            except OSError:
+            signature = _signature(path)
+            if signature is None:
                 del self._pending[path]
                 self._on_vanished(path, pending)
                 continue
-            if signature != pending.signature and waited < cfg.max_settle_seconds and not pending.closed:
+            if not forced and signature != pending.signature:
                 pending.signature = signature  # still changing: look again after another quiet period
-                pending.last_event = now
+                pending.checked = now
                 continue
             del self._pending[path]
             if self._recent.get(path) == signature:
+                self._checked[path] = now  # unchanged since it was examined
                 continue
             self._remember(path, signature)
             self._inflight.add(path)
@@ -372,7 +399,8 @@ class FileMonitor(Monitor):
         self._recent[path] = signature
         self._recent.move_to_end(path)
         while len(self._recent) > 20000:
-            self._recent.popitem(last=False)
+            old, _ = self._recent.popitem(last=False)
+            self._checked.pop(old, None)
 
     def _on_vanished(self, path: str, pending: _Pending) -> None:
         if pending.action == "modified":
@@ -391,6 +419,21 @@ class FileMonitor(Monitor):
             if not report.exists:
                 self._on_vanished(path, pending)
                 return
+            if report.error:
+                # It exists but cannot be read right now: still locked by whatever wrote it, or by a scanner.
+                attempt = self._retries.get(path, 0) + 1
+                if attempt <= MAX_READ_RETRIES:
+                    self._retries[path] = attempt
+                    self._push("retry:" + pending.action, path, pending.renamed_from)
+                    return
+                self._retries.pop(path, None)
+                if report.ext in fileinfo.RISKY_EXTS:
+                    name = sanitize.clean(basename(path), 120)
+                    self.emit("file", pending.action, f"A new runnable file could not be examined: {name}", path,
+                              [Indicator("file.unreadable", 20, "The file is locked or access to it was denied", "T1564")],
+                              {"path": path, "error": report.error})
+                return
+            self._retries.pop(path, None)
             if report.kind in ("link", "special"):
                 self.ctx.state.forget_drop(path)
                 return

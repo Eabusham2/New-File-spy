@@ -183,6 +183,7 @@ def test_cli_watch_then_events_export_and_sessions(tmp_path, capsys):
     finally:
         stop.set()
         dropper.join()
+    print(out)  # shown by pytest if the assertion below fails
     assert code == 0 and "dropped-" in out and "Exported:" in out and " medium" in out
     assert sorted(p.suffix for p in (tmp_path / "out").iterdir()) == [".html", ".json"]
 

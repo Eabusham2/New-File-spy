@@ -7,6 +7,7 @@ hostile file cannot make a rule run for a long time.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -111,8 +112,23 @@ class RuleSet:
         return out
 
 
+def builtin_rules_bytes() -> bytes:
+    return resources.files("filespy").joinpath("data/rules.json").read_bytes()
+
+
 def builtin_rules_text() -> str:
-    return resources.files("filespy").joinpath("data/rules.json").read_text(encoding="utf-8")
+    return builtin_rules_bytes().decode("utf-8")
+
+
+def builtin_rules_hashes() -> set[str]:
+    """SHA-256 of the built-in rule file as installed and with either kind of line ending.
+
+    A checkout on Windows may convert line endings, so one hash is not enough to
+    recognise a copy of our own rule file.
+    """
+    raw = builtin_rules_bytes()
+    unix = raw.replace(b"\r\n", b"\n")
+    return {hashlib.sha256(data).hexdigest() for data in (raw, unix, unix.replace(b"\n", b"\r\n"))}
 
 
 def load_rules(extra_files: list[str] | None = None) -> RuleSet:

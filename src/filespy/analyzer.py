@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -20,7 +19,7 @@ from filespy import fileinfo, sanitize
 from filespy.config import DetectionCfg
 from filespy.events import Indicator, Severity, merge_indicators
 from filespy.paths import basename, classify_location
-from filespy.rules import BUILTIN_BAD_HASHES, builtin_rules_text, load_hash_list, load_rules
+from filespy.rules import BUILTIN_BAD_HASHES, builtin_rules_hashes, load_hash_list, load_rules
 
 log = logging.getLogger("filespy")
 
@@ -91,7 +90,7 @@ class FileAnalyzer:
         self.bad_hashes.update(load_hash_list(self.cfg.hash_blocklists))
         self.good_hashes = load_hash_list(self.cfg.hash_allowlists)
         # Never flag our own rule file (it necessarily contains every signature string).
-        self._self_hashes = {hashlib.sha256(builtin_rules_text().encode("utf-8")).hexdigest()}
+        self._self_hashes = builtin_rules_hashes()
         self._cache: OrderedDict[tuple[str, int, int], FileReport] = OrderedDict()
         self._lock = threading.Lock()
         self._yara = self._load_yara()
