@@ -1,0 +1,743 @@
+{
+ "version": 1,
+ "rules": [
+  {
+   "id": "eicar",
+   "name": "EICAR antivirus test file",
+   "description": "This is the harmless EICAR test file that every antivirus is expected to detect.",
+   "score": 100,
+   "kinds": [],
+   "strings": [
+    {
+     "parts": [
+      "X5O!P%@AP[4\\PZX54(P^)7CC)7}$",
+      "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+     ]
+    }
+   ],
+   "min_match": 1,
+   "floor": "critical"
+  },
+  {
+   "id": "rat.asyncrat",
+   "name": "AsyncRAT / DcRat remote access trojan",
+   "description": "AsyncRAT / DcRat remote access trojan",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "AsyncMutex_6SI8OkPnk",
+    "AsyncRAT",
+    "DcRatByqwqdanchun",
+    "DcRat",
+    "VenomRAT"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.quasar",
+   "name": "Quasar remote access trojan",
+   "description": "Quasar remote access trojan",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "Quasar.Client",
+    "QuasarRAT",
+    "xClient.Core",
+    "Quasar Client"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.njrat",
+   "name": "njRAT (Bladabindi) remote access trojan",
+   "description": "njRAT (Bladabindi) remote access trojan",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "njRAT",
+    "Bladabindi",
+    "|'|'|",
+    "netsh firewall add allowedprogram",
+    "SEE_MASK_NOZONECHECKS",
+    "cmd.exe /c ping 0 -n 2 & del"
+   ],
+   "min_match": 2,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.nanocore",
+   "name": "NanoCore remote access trojan",
+   "description": "NanoCore remote access trojan",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "NanoCore Client",
+    "NanoCore.ClientPlugin",
+    "NanoCore"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.remcos",
+   "name": "Remcos remote access trojan",
+   "description": "Remcos remote access trojan",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "Remcos_Mutex_Inj",
+    "Breaking-Security.Net",
+    "* REMCOS v",
+    "Remcos restarted by watchdog"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.darkcomet",
+   "name": "DarkComet remote access trojan",
+   "description": "DarkComet remote access trojan",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "DarkComet",
+    "#KCMDDC",
+    "DC_MUTEX-",
+    "#BOT#OpenUrl"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.xworm",
+   "name": "XWorm remote access trojan",
+   "description": "XWorm remote access trojan",
+   "score": 85,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "XWorm V",
+    "XWormClient",
+    "XWorm"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.orcus",
+   "name": "Orcus remote access trojan",
+   "description": "Orcus remote access trojan",
+   "score": 85,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "Orcus.Shared",
+    "Orcus.Plugins",
+    "Orcus.CommandManagement",
+    "OrcusRAT"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.warzone",
+   "name": "Warzone / Ave Maria remote access trojan",
+   "description": "Warzone / Ave Maria remote access trojan",
+   "score": 85,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "AVE_MARIA",
+    "warzone160",
+    "Ave_Maria Stealer OpenSource"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.limerat",
+   "name": "LimeRAT remote access trojan",
+   "description": "LimeRAT remote access trojan",
+   "score": 85,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "LimeRAT",
+    "Lime.Settings",
+    "LimeLogger"
+   ],
+   "min_match": 1,
+   "floor": "high",
+   "mitre": "T1219"
+  },
+  {
+   "id": "rat.gh0st",
+   "name": "Gh0st remote access trojan family",
+   "description": "Gh0st remote access trojan family",
+   "score": 70,
+   "kinds": [
+    "pe"
+   ],
+   "strings": [
+    "Gh0st",
+    "gh0st"
+   ],
+   "min_match": 1,
+   "mitre": "T1219"
+  },
+  {
+   "id": "c2.cobaltstrike",
+   "name": "Cobalt Strike beacon artefacts",
+   "description": "Cobalt Strike beacon artefacts",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "beacon.x64.dll",
+    "beacon.dll",
+    "%s as %s\\%s: %d",
+    "MSSE-%d-server",
+    "ReflectiveLoader"
+   ],
+   "min_match": 2,
+   "floor": "high",
+   "mitre": "T1071"
+  },
+  {
+   "id": "c2.meterpreter",
+   "name": "Metasploit Meterpreter artefacts",
+   "description": "Metasploit Meterpreter artefacts",
+   "score": 90,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "metsrv.dll",
+    "metsrv.x64.dll",
+    "stdapi_fs_",
+    "stdapi_sys_",
+    "ReflectiveLoader",
+    "meterpreter"
+   ],
+   "min_match": 2,
+   "floor": "high",
+   "mitre": "T1071"
+  },
+  {
+   "id": "cred.mimikatz",
+   "name": "Mimikatz credential dumper",
+   "description": "Mimikatz credential dumper",
+   "score": 95,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "sekurlsa::logonpasswords",
+    "gentilkiwi",
+    "mimikatz",
+    "lsadump::sam",
+    "Invoke-Mimikatz"
+   ],
+   "min_match": 1,
+   "nocase": true,
+   "floor": "high",
+   "mitre": "T1003"
+  },
+  {
+   "id": "cred.lazagne",
+   "name": "LaZagne password recovery tool",
+   "description": "LaZagne password recovery tool",
+   "score": 70,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "LaZagne",
+    "lazagne.config"
+   ],
+   "min_match": 1,
+   "mitre": "T1555"
+  },
+  {
+   "id": "stealer.generic",
+   "name": "Password and wallet stealer strings",
+   "description": "Password and wallet stealer strings",
+   "score": 55,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "Login Data",
+    "logins.json",
+    "wallet.dat",
+    "Local State",
+    "encrypted_key",
+    "cookies.sqlite",
+    "\\Discord\\Local Storage\\leveldb",
+    "Web Data",
+    "key4.db"
+   ],
+   "min_match": 4,
+   "mitre": "T1555.003"
+  },
+  {
+   "id": "exfil.chat_api",
+   "name": "Sends data to a Telegram bot or Discord webhook",
+   "description": "Sends data to a Telegram bot or Discord webhook",
+   "score": 30,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "api.telegram.org/bot",
+    "discord.com/api/webhooks",
+    "discordapp.com/api/webhooks"
+   ],
+   "min_match": 1,
+   "nocase": true,
+   "mitre": "T1567"
+  },
+  {
+   "id": "spy.keylogger",
+   "name": "Keylogger building blocks",
+   "description": "Keylogger building blocks",
+   "score": 40,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "GetAsyncKeyState",
+    "SetWindowsHookEx",
+    "GetForegroundWindow",
+    "GetKeyboardState",
+    "[ENTER]",
+    "[BACKSPACE]",
+    "[TAB]",
+    "MapVirtualKey"
+   ],
+   "min_match": 4,
+   "mitre": "T1056.001"
+  },
+  {
+   "id": "inject.process",
+   "name": "Process-injection API combination",
+   "description": "Process-injection API combination",
+   "score": 40,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho"
+   ],
+   "strings": [
+    "VirtualAllocEx",
+    "WriteProcessMemory",
+    "CreateRemoteThread",
+    "NtUnmapViewOfSection",
+    "QueueUserAPC",
+    "SetThreadContext",
+    "NtWriteVirtualMemory"
+   ],
+   "min_match": 3,
+   "mitre": "T1055"
+  },
+  {
+   "id": "ps.download_cradle",
+   "name": "PowerShell download-and-run code",
+   "description": "PowerShell download-and-run code",
+   "score": 55,
+   "kinds": [
+    "script",
+    "html",
+    "lnk"
+   ],
+   "strings": [
+    "DownloadString(",
+    "DownloadFile(",
+    "Invoke-Expression",
+    "IEX(",
+    "IEX (",
+    "FromBase64String",
+    "Net.WebClient",
+    "-EncodedCommand",
+    "-ExecutionPolicy Bypass",
+    "-WindowStyle Hidden",
+    "Invoke-WebRequest",
+    "Start-BitsTransfer"
+   ],
+   "min_match": 3,
+   "nocase": true,
+   "mitre": "T1059.001"
+  },
+  {
+   "id": "ps.amsi_bypass",
+   "name": "Antimalware Scan Interface bypass",
+   "description": "Antimalware Scan Interface bypass",
+   "score": 70,
+   "kinds": [
+    "script",
+    "html"
+   ],
+   "strings": [
+    "AmsiScanBuffer",
+    "amsiInitFailed",
+    "System.Management.Automation.AmsiUtils"
+   ],
+   "min_match": 1,
+   "nocase": true,
+   "mitre": "T1562.001"
+  },
+  {
+   "id": "tamper.defender_script",
+   "name": "Script that switches off Microsoft Defender",
+   "description": "Script that switches off Microsoft Defender",
+   "score": 65,
+   "kinds": [
+    "script",
+    "html",
+    "pe"
+   ],
+   "strings": [
+    "Set-MpPreference",
+    "DisableRealtimeMonitoring",
+    "Add-MpPreference",
+    "ExclusionPath",
+    "DisableAntiSpyware",
+    "sc stop WinDefend",
+    "sc delete WinDefend"
+   ],
+   "min_match": 2,
+   "nocase": true,
+   "mitre": "T1562.001"
+  },
+  {
+   "id": "ransom.shadow_delete",
+   "name": "Deletes backups and shadow copies (ransomware preparation)",
+   "description": "Deletes backups and shadow copies (ransomware preparation)",
+   "score": 75,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "vssadmin delete shadows",
+    "vssadmin.exe delete shadows",
+    "wmic shadowcopy delete",
+    "recoveryenabled no",
+    "wbadmin delete catalog",
+    "bootstatuspolicy ignoreallfailures"
+   ],
+   "min_match": 1,
+   "nocase": true,
+   "floor": "high",
+   "mitre": "T1490"
+  },
+  {
+   "id": "ransom.note",
+   "name": "Ransom note wording",
+   "description": "Ransom note wording",
+   "score": 55,
+   "kinds": [
+    "text",
+    "html"
+   ],
+   "strings": [
+    "your files have been encrypted",
+    "all your files are encrypted",
+    "decrypt your files",
+    "bitcoin",
+    ".onion",
+    "tor browser",
+    "private key",
+    "decryption key"
+   ],
+   "min_match": 3,
+   "nocase": true,
+   "mitre": "T1486"
+  },
+  {
+   "id": "miner.generic",
+   "name": "Cryptocurrency miner",
+   "description": "Cryptocurrency miner",
+   "score": 65,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "stratum+tcp://",
+    "stratum+ssl://",
+    "xmrig",
+    "--donate-level",
+    "cryptonight",
+    "randomx",
+    "nicehash"
+   ],
+   "min_match": 2,
+   "nocase": true,
+   "mitre": "T1496"
+  },
+  {
+   "id": "webshell.generic",
+   "name": "Web shell code",
+   "description": "Web shell code",
+   "score": 65,
+   "kinds": [
+    "script",
+    "text",
+    "html"
+   ],
+   "strings": [
+    "eval($_POST",
+    "eval($_REQUEST",
+    "eval($_GET",
+    "eval(base64_decode(",
+    "assert($_POST",
+    "c99shell",
+    "r57shell",
+    "b374k",
+    "<%eval request(",
+    "system($_GET"
+   ],
+   "min_match": 1,
+   "nocase": true,
+   "mitre": "T1505.003"
+  },
+  {
+   "id": "shell.reverse",
+   "name": "Reverse shell one-liner",
+   "description": "Reverse shell one-liner",
+   "score": 65,
+   "kinds": [
+    "script",
+    "elf"
+   ],
+   "strings": [
+    "/dev/tcp/",
+    "bash -i >&",
+    "nc -e /bin/",
+    "ncat -e /bin/",
+    "pty.spawn(",
+    "socat exec:"
+   ],
+   "min_match": 1,
+   "nocase": true,
+   "mitre": "T1059.004"
+  },
+  {
+   "id": "uac.bypass",
+   "name": "User Account Control bypass",
+   "description": "User Account Control bypass",
+   "score": 60,
+   "kinds": [
+    "pe",
+    "elf",
+    "macho",
+    "script"
+   ],
+   "strings": [
+    "ms-settings\\shell\\open\\command",
+    "DelegateExecute",
+    "fodhelper",
+    "computerdefaults",
+    "sdclt.exe",
+    "eventvwr"
+   ],
+   "min_match": 2,
+   "nocase": true,
+   "mitre": "T1548.002"
+  },
+  {
+   "id": "payload.base64_pe",
+   "name": "A Windows program hidden as base64 text",
+   "description": "A Windows program hidden as base64 text",
+   "score": 55,
+   "kinds": [
+    "script",
+    "text",
+    "html"
+   ],
+   "strings": [
+    "TVqQAAMAAAAEAAAA",
+    "TVpQAAIAAAAEAA8A",
+    "TVoAAAAAAAAAAAAA",
+    "TVqAAAEAAAAEABAA"
+   ],
+   "min_match": 1,
+   "mitre": "T1027"
+  },
+  {
+   "id": "script.wsh_dropper",
+   "name": "Windows Script Host downloader building blocks",
+   "description": "Windows Script Host downloader building blocks",
+   "score": 45,
+   "kinds": [
+    "script",
+    "html"
+   ],
+   "strings": [
+    "WScript.Shell",
+    "ADODB.Stream",
+    "MSXML2.XMLHTTP",
+    "Scripting.FileSystemObject",
+    "ActiveXObject",
+    "Shell.Application",
+    "MSXML2.ServerXMLHTTP"
+   ],
+   "min_match": 3,
+   "nocase": true,
+   "mitre": "T1059.005"
+  },
+  {
+   "id": "lnk.script_host",
+   "name": "Shortcut that launches a script host",
+   "description": "Shortcut that launches a script host",
+   "score": 60,
+   "kinds": [
+    "lnk"
+   ],
+   "strings": [
+    "powershell",
+    "cmd.exe",
+    "mshta",
+    "wscript",
+    "cscript",
+    "rundll32",
+    "regsvr32",
+    "http://",
+    "https://",
+    "-enc"
+   ],
+   "min_match": 2,
+   "nocase": true,
+   "mitre": "T1204.002"
+  },
+  {
+   "id": "linux.preload_rootkit",
+   "name": "Library-preload rootkit markers",
+   "description": "Library-preload rootkit markers",
+   "score": 55,
+   "kinds": [
+    "elf",
+    "script"
+   ],
+   "strings": [
+    "/etc/ld.so.preload",
+    "LD_PRELOAD",
+    "readdir64",
+    "hide_pid",
+    "is_invisible"
+   ],
+   "min_match": 3,
+   "mitre": "T1574.006"
+  },
+  {
+   "id": "linux.mirai",
+   "name": "Mirai-style botnet strings",
+   "description": "Mirai-style botnet strings",
+   "score": 70,
+   "kinds": [
+    "elf"
+   ],
+   "strings": [
+    "/bin/busybox MIRAI",
+    "MIRAI: applet not found",
+    "/dev/watchdog",
+    "/proc/net/tcp"
+   ],
+   "min_match": 2,
+   "mitre": "T1498"
+  },
+  {
+   "id": "macos.password_phish",
+   "name": "macOS script that asks for your password and reads the keychain",
+   "description": "macOS script that asks for your password and reads the keychain",
+   "score": 70,
+   "kinds": [
+    "script",
+    "macho"
+   ],
+   "strings": [
+    "osascript",
+    "display dialog",
+    "hidden answer",
+    "dscl",
+    "authonly",
+    "login.keychain-db",
+    "with administrator privileges"
+   ],
+   "min_match": 4,
+   "nocase": true,
+   "mitre": "T1056.002"
+  }
+ ]
+}
