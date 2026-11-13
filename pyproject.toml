@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "filespy"
+version = "0.1.0"
+description = "Defensive host monitor: alerts on dropped files, autorun and security-setting changes, and suspicious programs at runtime."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["psutil>=5.9", "watchdog>=3.0"]
+keywords = ["security", "malware-detection", "file-monitoring", "autoruns", "persistence", "dfir", "blue-team"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Security",
+]
+
+[project.optional-dependencies]
+yara = ["yara-python"]
+dev = ["pytest>=7", "ruff"]
+
+[project.scripts]
+filespy = "filespy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+filespy = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B905"]
