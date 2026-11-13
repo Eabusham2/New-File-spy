@@ -27,6 +27,7 @@ def test_store_roundtrip_query_and_prune(tmp_path):
     store = EventStore(tmp_path / "db" / "events.db")
     events = sample_events()
     events[0].session = events[1].session = "s1"
+    events[1].ts = events[0].ts  # coarse clocks give events identical times; insertion order must still hold
     events[2].session = "s2"
     events[2].ts = time.time() - 40 * 86400
     for event in events:

@@ -56,7 +56,14 @@ class EventStore:
         row = (event.id, event.ts, event.session, event.category, event.action, int(event.severity),
                event.score, event.title, event.subject, payload)
         with self._lock:
-            self._db.execute("INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?)", row)
+            # An upsert keeps the row's position, so events with equal timestamps stay in arrival order.
+            self._db.execute(
+                "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "ts=excluded.ts, session=excluded.session, category=excluded.category, action=excluded.action, "
+                "severity=excluded.severity, score=excluded.score, title=excluded.title, subject=excluded.subject, "
+                "data=excluded.data",
+                row,
+            )
             self._db.commit()
 
     def query(
@@ -87,7 +94,8 @@ class EventStore:
             clauses.append("(title LIKE ? OR subject LIKE ?)")
             params.extend([f"%{text}%", f"%{text}%"])
         sql = "SELECT id, ts, session, category, action, severity, score, title, subject, data FROM events WHERE "
-        sql += " AND ".join(clauses) + " ORDER BY ts " + ("DESC" if newest_first else "ASC")
+        direction = "DESC" if newest_first else "ASC"
+        sql += " AND ".join(clauses) + f" ORDER BY ts {direction}, rowid {direction}"
         if limit:
             sql += " LIMIT ?"
             params.append(int(limit))

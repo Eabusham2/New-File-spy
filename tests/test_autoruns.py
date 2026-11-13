@@ -309,12 +309,13 @@ def test_real_registry_run_key_is_detected(make_ctx):
     ctx = make_ctx()
     ctx.registry = WinRegistry()
     name = f"FileSpyTest{os.getpid()}"
+    existed = ctx.registry.values("HKCU", RUN) is not None  # a fresh user profile has no Run key yet
     monitor = AutorunMonitor(ctx)
     monitor.start()
     try:
         assert monitor.ready.wait(60) and not monitor.failed
         monitor.interval = 0.2
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN, 0, winreg.KEY_SET_VALUE) as key:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN, 0, winreg.KEY_SET_VALUE) as key:
             winreg.SetValueEx(key, name, 0, winreg.REG_SZ, r"C:\Users\Public\filespy-test.exe")
         added = wait_for(lambda: [e for e in ctx.bus.find("autorun", "added") if name in e.title], 30)
         assert added and added[0].details["target"] == r"C:\Users\Public\filespy-test.exe"
@@ -324,5 +325,7 @@ def test_real_registry_run_key_is_detected(make_ctx):
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN, 0, winreg.KEY_SET_VALUE) as key:
                 winreg.DeleteValue(key, name)
+            if not existed:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, RUN)  # leave the profile as we found it
         except OSError:
             pass
