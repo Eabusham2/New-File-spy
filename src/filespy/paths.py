@@ -122,7 +122,8 @@ _WIN_WRITABLE = (
     "/appdata/", "/programdata/", "/users/public/", "/downloads/", "/desktop/", "/documents/",
     "/perflogs/", "/windows/tasks/", "/windows/debug/", "/music/", "/pictures/", "/videos/",
 )
-_POSIX_TEMP = ("/tmp/", "/var/tmp/", "/dev/shm/", "/private/tmp/", "/private/var/tmp/", "/run/user/")
+_POSIX_TEMP = ("/tmp/", "/var/tmp/", "/dev/shm/", "/private/tmp/", "/private/var/tmp/", "/run/user/",
+               "/var/folders/", "/private/var/folders/")
 _POSIX_STARTUP = (
     "/.config/autostart/", "/library/launchagents/", "/library/launchdaemons/", "/etc/cron",
     "/.config/systemd/user/", "/etc/systemd/system/", "/etc/init.d/", "/etc/profile.d/",

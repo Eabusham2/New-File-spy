@@ -471,9 +471,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_selftest(args: argparse.Namespace) -> int:
-    """Prove that alerts fire, using the harmless EICAR test file in a private temporary folder."""
+    """Prove that alerts fire, using harmless test files in a private temporary folder."""
     from filespy.app import App
-    from filespy.testing import eicar_bytes, make_pe, wait_for
+    from filespy.testing import eicar_bytes, make_pe, test_threat_bytes, wait_for
 
     work = Path(tempfile.mkdtemp(prefix="filespy-selftest-"))
     watched = work / "watched"
@@ -487,23 +487,24 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     passed = False
     try:
         app.start()
-        _out("Dropping a harmless test program and the EICAR antivirus test file...")
+        _out("Dropping three harmless test files: a dummy program, FileSpy's own test marker, and the EICAR antivirus test file...")
         (watched / "filespy-test-program.exe").write_bytes(make_pe())
-        target = watched / "filespy-eicar-test.com"
-        target.write_bytes(eicar_bytes())
+        (watched / "filespy-test-marker.bin").write_bytes(test_threat_bytes())
+        try:
+            (watched / "filespy-eicar-test.com").write_bytes(eicar_bytes())
+        except OSError:
+            pass  # an antivirus may block the write; the marker file is the real test
 
-        def seen() -> str:
-            for event in app.store.query(session=app.session):
-                if event.category == "file" and "eicar" in event.subject.lower():
-                    return "critical" if event.severity is Severity.CRITICAL else "removed"
-            return ""
+        def critical(name: str) -> bool:
+            return any(e.category == "file" and name in e.subject and e.severity is Severity.CRITICAL
+                       for e in app.store.query(session=app.session))
 
-        outcome = wait_for(seen, 30, 0.25)
-        passed = bool(outcome)
-        if outcome == "critical":
-            _out("\nPASS: the test file was detected and reported as CRITICAL.")
-        elif outcome:
-            _out("\nPASS: the drop was noticed, but your antivirus removed the test file before FileSpy could examine it.")
+        passed = bool(wait_for(lambda: critical("filespy-test-marker"), 30, 0.25))
+        if passed:
+            wait_for(lambda: critical("filespy-eicar-test"), 5, 0.25)
+            _out("\nPASS: the dropped test file was detected and reported as CRITICAL.")
+            if not critical("filespy-eicar-test"):
+                _out("(The EICAR file was not reported: your antivirus most likely removed it first, which is fine.)")
         else:
             _out("\nFAIL: no alert was raised for the test file within 30 seconds. Run 'filespy doctor'.")
     finally:

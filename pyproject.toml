@@ -18,6 +18,10 @@ classifiers = [
     "Topic :: Security",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Eabusham2/New-File-spy"
+Issues = "https://github.com/Eabusham2/New-File-spy/issues"
+
 [project.optional-dependencies]
 yara = ["yara-python"]
 dev = ["pytest>=7", "ruff"]

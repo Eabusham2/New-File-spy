@@ -6,7 +6,7 @@ import pytest
 
 from filespy.events import Severity
 from filespy.monitors.files import FileMonitor, PollingScanner
-from filespy.testing import eicar_bytes, make_elf, make_pe, wait_for
+from filespy.testing import make_elf, make_pe, test_threat_bytes, wait_for
 
 
 @pytest.fixture(params=["auto", "polling"])
@@ -41,9 +41,9 @@ def test_dropped_program_is_reported_and_remembered(running):
 
 def test_eicar_drop_is_critical(running):
     ctx, _monitor, watched = running
-    (watched / "test.com").write_bytes(eicar_bytes())
+    (watched / "test.com").write_bytes(test_threat_bytes())
     events = wait_for(lambda: [e for e in file_events(ctx) if e.severity is Severity.CRITICAL])
-    assert events and any(i.id == "file.hash_blocklist" for i in events[0].indicators)
+    assert events and any(i.id == "file.rule.filespy.selftest" for i in events[0].indicators)
 
 
 def test_ordinary_files_stay_quiet_unless_asked(running):

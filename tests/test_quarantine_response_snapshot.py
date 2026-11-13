@@ -8,7 +8,7 @@ from filespy import snapshot
 from filespy.events import Indicator, make_event
 from filespy.quarantine import Quarantine, QuarantineError
 from filespy.response import Responder
-from filespy.testing import eicar_bytes, make_pe, wait_for
+from filespy.testing import make_pe, test_threat_bytes, wait_for
 
 
 def test_quarantine_round_trip(tmp_path):
@@ -72,7 +72,7 @@ def test_responder_is_off_by_default_and_quarantines_when_enabled(make_ctx, tmp_
     ctx.bus.publish(make_event("file", "created", "low", str(low), [Indicator("x", 30, "r")], {"path": str(low)}))
     assert low.exists()
     bad = tmp_path / "bad.com"
-    bad.write_bytes(eicar_bytes())
+    bad.write_bytes(test_threat_bytes())
     report = ctx.analyzer.analyze(str(bad))
     ctx.bus.publish(make_event("file", "created", "bad", str(bad), report.indicators, report.to_details()))
     assert not bad.exists()

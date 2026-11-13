@@ -19,6 +19,23 @@
    "floor": "critical"
   },
   {
+   "id": "filespy.selftest",
+   "name": "FileSpy self-test marker",
+   "score": 100,
+   "kinds": [],
+   "description": "A harmless marker used by 'filespy selftest' and the test suite to prove that alerts fire.",
+   "strings": [
+    {
+     "parts": [
+      "FILESPY-HARMLESS-",
+      "TEST-MARKER-7f3c9a1e52b84d06"
+     ]
+    }
+   ],
+   "min_match": 1,
+   "floor": "critical"
+  },
+  {
    "id": "rat.asyncrat",
    "name": "AsyncRAT / DcRat remote access trojan",
    "description": "AsyncRAT / DcRat remote access trojan",
@@ -738,6 +755,28 @@
    "min_match": 4,
    "nocase": true,
    "mitre": "T1056.002"
+  },
+  {
+   "id": "script.pipe_to_shell",
+   "name": "Script that downloads and runs code",
+   "score": 35,
+   "kinds": [
+    "script"
+   ],
+   "description": "Script that downloads and runs code",
+   "nocase": true,
+   "mitre": "T1105",
+   "min_match": 2,
+   "strings": [
+    "curl ",
+    "wget ",
+    "| sh",
+    "| bash",
+    "|bash",
+    "base64 -d",
+    "Invoke-WebRequest",
+    "chmod +x /tmp"
+   ]
   }
  ]
 }

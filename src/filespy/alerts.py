@@ -79,8 +79,12 @@ def detail_line(event: Event) -> str:
         parts.append(f"started by {clean(d['parent_name'], 60)}")
     if d.get("cmdline") and event.category == "process":
         parts.append(f"command: {clean(d['cmdline'], 300)}")
-    if d.get("command") and event.category == "autorun":
+    if d.get("added_lines"):
+        parts.append("added: " + " | ".join(clean(line, 160) for line in d["added_lines"][:3]))
+    elif d.get("command") and event.category == "autorun":
         parts.append(f"runs: {clean(d['command'], 300)}")
+    if event.category == "setting" and "new" in d and "old" in d:
+        parts.append(f"was: {clean(d['old'], 120)}   now: {clean(d['new'], 120)}")
     if d.get("sha256"):
         parts.append(f"sha256 {d['sha256']}")
     if d.get("size") and event.category == "file":

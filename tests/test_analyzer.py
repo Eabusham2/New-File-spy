@@ -7,7 +7,7 @@ from filespy import fileinfo
 from filespy.analyzer import FileAnalyzer, name_indicators
 from filespy.events import Severity, summarize
 from filespy.rules import RuleSet, load_rules
-from filespy.testing import eicar_bytes, make_elf, make_pe
+from filespy.testing import eicar_bytes, make_elf, make_pe, test_threat_bytes
 
 
 def ids(report):
@@ -81,10 +81,29 @@ def test_rule_matching_modes():
 
 def test_eicar_is_critical(tmp_path):
     target = tmp_path / "test.com"
-    target.write_bytes(eicar_bytes())
-    report = FileAnalyzer().analyze(str(target))
+    try:
+        target.write_bytes(eicar_bytes())
+        report = FileAnalyzer().analyze(str(target))
+    except OSError:
+        pytest.skip("an antivirus blocked the EICAR test file")
+    if report.error or not report.exists:
+        pytest.skip("an antivirus removed the EICAR test file")
     assert "file.hash_blocklist" in ids(report) and "file.rule.eicar" in ids(report)
     assert summarize(report.indicators)[1] is Severity.CRITICAL
+
+
+def test_filespy_marker_is_critical_and_never_stored_whole(tmp_path):
+    target = tmp_path / "marker.bin"
+    target.write_bytes(test_threat_bytes())
+    report = FileAnalyzer().analyze(str(target))
+    assert ids(report) == {"file.rule.filespy.selftest"} and summarize(report.indicators)[1] is Severity.CRITICAL
+    import filespy
+    root = os.path.dirname(filespy.__file__)
+    for folder, _dirs, files in os.walk(root):
+        for name in files:
+            if name.endswith((".py", ".json")):
+                with open(os.path.join(folder, name), "rb") as handle:
+                    assert test_threat_bytes().strip() not in handle.read(), name
 
 
 def test_rat_marker_in_program(tmp_path):
@@ -160,7 +179,7 @@ def test_never_follows_links_or_opens_special_files(tmp_path):
     assert analyzer.analyze(str(tmp_path)).kind == "special"
     if sys.platform != "win32":
         real = tmp_path / "real.exe"
-        real.write_bytes(eicar_bytes())
+        real.write_bytes(test_threat_bytes())
         link = tmp_path / "link.exe"
         link.symlink_to(real)
         report = analyzer.analyze(str(link))

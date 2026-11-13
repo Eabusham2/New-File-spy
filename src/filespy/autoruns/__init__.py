@@ -97,7 +97,7 @@ def score_entry(entry: AutorunEntry, ctx: Context, action: str = "added", added_
     if _SCRIPT_HOST.search(command[:4000]):
         out.append(Indicator("autorun.script_host", 20, "It launches a script host or download tool rather than a normal program", "T1059"))
     out.extend(command_indicators(command, ctx.platform))
-    target = entry.target
+    target = "" if entry.content else entry.target
     if target:
         location = classify_location(target, ctx.platform)
         if location == "temp":

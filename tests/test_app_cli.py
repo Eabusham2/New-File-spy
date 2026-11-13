@@ -11,7 +11,7 @@ from filespy.app import App
 from filespy.cli import main, parse_since
 from filespy.config import Config
 from filespy.events import Severity
-from filespy.testing import eicar_bytes, make_pe, wait_for
+from filespy.testing import make_pe, test_threat_bytes, wait_for
 
 
 def quiet_config(watched):
@@ -98,9 +98,9 @@ def test_app_stores_exports_and_summarises(tmp_path):
     app = App(cfg, tmp_path / "data", only={"files"}, console=False)
     app.start()
     (watched / "tool.exe").write_bytes(make_pe())
-    (watched / "virus.com").write_bytes(eicar_bytes())
+    (watched / "virus.com").write_bytes(test_threat_bytes())
     assert wait_for(lambda: app.counts["critical"] >= 1 and app.counts["medium"] >= 1, 30)
-    assert wait_for(lambda: not (watched / "virus.com").exists(), 10), "critical file was not quarantined"
+    assert wait_for(lambda: not (watched / "virus.com").exists(), 15), "critical file was not quarantined"
     exported = app.stop()
     assert sorted(p.suffix for p in exported) == [".csv", ".html", ".json"]
     doc = json.loads(next(p for p in exported if p.suffix == ".json").read_text(encoding="utf-8"))
@@ -122,7 +122,7 @@ def test_cli_scan_config_quarantine_and_events(tmp_path, capsys):
     samples = tmp_path / "samples"
     (samples / "sub").mkdir(parents=True)
     (samples / "clean.txt").write_text("hello")
-    (samples / "sub" / "bad.com").write_bytes(eicar_bytes())
+    (samples / "sub" / "bad.com").write_bytes(test_threat_bytes())
 
     code, out, _ = run(capsys, "--data-dir", home, "scan", str(samples))
     assert code == 0 and "0 flagged" in out
@@ -167,18 +167,27 @@ def test_cli_watch_then_events_export_and_sessions(tmp_path, capsys):
 
     import threading
 
-    def drop():
-        time.sleep(1.0)
-        (watched / "dropped.exe").write_bytes(make_pe())
+    stop = threading.Event()
 
-    threading.Thread(target=drop, daemon=True).start()
-    code, out, _ = run(capsys, "--data-dir", home, "watch", "--no-defaults", "-p", str(watched), "--only", "files",
-                       "--duration", "4", "--no-desktop", "--export", "html,json", "--export-dir", str(tmp_path / "out"))
-    assert code == 0 and "dropped.exe" in out and "Exported:" in out and "1 medium" in out
+    def drop():
+        count = 0
+        while not stop.wait(0.4):  # keep dropping so the test does not depend on start-up speed
+            count += 1
+            (watched / f"dropped-{count}.exe").write_bytes(make_pe(payload=str(count).encode()))
+
+    dropper = threading.Thread(target=drop, daemon=True)
+    dropper.start()
+    try:
+        code, out, _ = run(capsys, "--data-dir", home, "watch", "--no-defaults", "-p", str(watched), "--only", "files",
+                           "--duration", "6", "--no-desktop", "--export", "html,json", "--export-dir", str(tmp_path / "out"))
+    finally:
+        stop.set()
+        dropper.join()
+    assert code == 0 and "dropped-" in out and "Exported:" in out and " medium" in out
     assert sorted(p.suffix for p in (tmp_path / "out").iterdir()) == [".html", ".json"]
 
     code, out, _ = run(capsys, "--data-dir", home, "events", "--severity", "low", "--since", "1h")
-    assert "dropped.exe" in out and "1 event(s)" in out
+    assert "dropped-" in out and "event(s)" in out
     lines = run(capsys, "--data-dir", home, "events", "--json", "--category", "file")[1].splitlines()
     assert json.loads(lines[0])["category"] == "file"
     assert "No stored events" in run(capsys, "--data-dir", home, "events", "--text", "zzzz")[1]
@@ -186,7 +195,7 @@ def test_cli_watch_then_events_export_and_sessions(tmp_path, capsys):
 
     target = tmp_path / "report.csv"
     code, out, _ = run(capsys, "--data-dir", home, "export", "-f", "csv", "-o", str(target), "--severity", "medium")
-    assert code == 0 and "Exported 1 event(s)" in out and "dropped.exe" in target.read_text(encoding="utf-8-sig")
+    assert code == 0 and "Exported " in out and "dropped-" in target.read_text(encoding="utf-8-sig")
     assert run(capsys, "--data-dir", home, "export", "-f", "pdf")[0] == 2
     assert run(capsys, "--data-dir", home, "watch", "--only", "bogus", "--duration", "1")[0] == 2
 

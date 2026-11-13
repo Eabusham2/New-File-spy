@@ -17,6 +17,17 @@ def eicar_bytes() -> bytes:
     return "".join(_EICAR_PARTS).encode("ascii")
 
 
+_MARKER_PARTS = ("FILESPY-HARMLESS-", "TEST-MARKER-7f3c9a1e52b84d06")
+
+
+def test_threat_bytes() -> bytes:
+    """A harmless marker that FileSpy (and nothing else) reports as critical. Assembled at run time."""
+    return ("".join(_MARKER_PARTS) + "\n").encode("ascii")
+
+
+test_threat_bytes.__test__ = False  # type: ignore[attr-defined]  # not a pytest test
+
+
 def make_pe(sections: tuple[str, ...] = (".text",), dll: bool = False, payload: bytes = b"", signed: bool = False) -> bytes:
     """A structurally valid, non-functional 32-bit PE image for tests."""
     pe_offset = 0x80

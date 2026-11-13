@@ -74,8 +74,9 @@ class AutorunMonitor(Monitor):
         name = sanitize.clean(entry.name, 100)
         details = entry.to_dict()
         details["path"] = entry.target
+        subject = entry.target if entry.content else entry.location
         if action == "removed":
-            self.emit("autorun", "removed", f"A {what} was removed: {name}", entry.location, details=details)
+            self.emit("autorun", "removed", f"A {what} was removed: {name}", subject, details=details)
             return
         added_text = ""
         if entry.content and old is not None:
@@ -84,10 +85,10 @@ class AutorunMonitor(Monitor):
             added_text = "\n".join(lines)
             if not lines:
                 # Only deletions or comment edits: worth recording, not worth an alert.
-                self.emit("autorun", "changed", f"A {what} was edited (nothing added): {name}", entry.location, details=details)
+                self.emit("autorun", "changed", f"A {what} was edited (nothing added): {name}", subject, details=details)
                 return
         if old is not None:
             details["previous_command"] = old.command
         indicators = score_entry(entry, self.ctx, action, added_text)
         verb = "added" if action == "added" else "changed"
-        self.emit("autorun", action, f"A {what} was {verb}: {name}", entry.location, indicators, details)
+        self.emit("autorun", action, f"A {what} was {verb}: {name}", subject, indicators, details)
