@@ -49,6 +49,33 @@ def make_elf() -> bytes:
     return b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + struct.pack("<HH", 2, 0x3E) + b"\x00" * 100
 
 
+def make_lnk(target: str, arguments: str = "") -> bytes:
+    """A minimal Windows shortcut pointing at ``target``."""
+    flags = 0x2 | 0x80 | (0x20 if arguments else 0)
+    header = struct.pack("<I", 0x4C) + bytes.fromhex("0114020000000000c000000000000046") + struct.pack("<I", flags)
+    header = header.ljust(76, b"\x00")
+    path = target.encode("cp1252") + b"\x00"
+    info_header = 28
+    info = struct.pack("<7I", info_header + len(path) + 1, info_header, 0x1, 0, info_header, 0, info_header + len(path))
+    info += path + b"\x00"
+    strings = b""
+    if arguments:
+        strings = struct.pack("<H", len(arguments)) + arguments.encode("utf-16-le")
+    return header + info + strings
+
+
+def make_task_actions(path: str, arguments: str = "", context: str = "Author", version: int = 3) -> bytes:
+    """A scheduled-task ``Actions`` registry value that runs one program."""
+
+    def packed(text: str) -> bytes:
+        raw = text.encode("utf-16-le")
+        return struct.pack("<I", len(raw)) + raw
+
+    blob = struct.pack("<H", version) + packed(context) + struct.pack("<H", 0x6666)
+    blob += packed("") + packed(path) + packed(arguments) + packed("")
+    return blob + (struct.pack("<H", 0) if version >= 3 else b"")
+
+
 def wait_for(predicate: Callable[[], Any], timeout: float = 10.0, interval: float = 0.05) -> Any:
     """Poll until ``predicate`` returns something truthy or the timeout passes; return its last value."""
     deadline = time.monotonic() + timeout
