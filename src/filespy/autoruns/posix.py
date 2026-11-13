@@ -13,6 +13,7 @@ import shlex
 from filespy.autoruns import AutorunEntry
 from filespy.autoruns.cmdline import extract_posix_target
 from filespy.context import Context
+from filespy.textutil import wait_until_quiet
 
 MAX_FILE = 262144
 _CRON_AT = re.compile(r"^@(?:reboot|yearly|annually|monthly|weekly|daily|midnight|hourly)\s+(.*)$")
@@ -25,6 +26,7 @@ def read_text(path: str, limit: int = MAX_FILE) -> str | None:
     try:
         if not os.path.isfile(path):
             return None
+        wait_until_quiet(path)
         with open(path, encoding="utf-8", errors="replace") as handle:
             return handle.read(limit)
     except OSError:

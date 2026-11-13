@@ -2,28 +2,15 @@
 
 from __future__ import annotations
 
-import difflib
 import logging
 
 from filespy import sanitize
 from filespy.autoruns import AutorunEntry, get_providers, label, score_entry
 from filespy.monitors.base import Monitor
+from filespy.textutil import added_lines
 
 log = logging.getLogger("filespy")
 SLOW_EVERY = 3
-
-
-def added_lines(old: str, new: str, limit: int = 20) -> list[str]:
-    """Lines present in ``new`` but not in ``old`` (ignoring blank lines and comments)."""
-    out = []
-    for line in difflib.ndiff(old.splitlines(), new.splitlines()):
-        if line.startswith("+ "):
-            text = line[2:].strip()
-            if text and not text.startswith("#"):
-                out.append(text)
-                if len(out) >= limit:
-                    break
-    return out
 
 
 class AutorunMonitor(Monitor):
