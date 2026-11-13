@@ -163,12 +163,14 @@ def test_dropped_file_executed_and_young_image(tmp_path):
     exe.write_bytes(b"x")
     state = SharedState()
     proc = ProcInfo(10, "payload", str(exe), [str(exe)])
-    assert "proc.dropped_file_executed" not in ids(evaluate(proc, L, state))
-    state.note_drop(str(exe), "abc", "ev1", score=40)
-    found = evaluate(proc, L, state)
-    assert {"proc.dropped_file_executed", "proc.young_image"} <= ids(found)
-    assert summarize(found)[1] >= Severity.HIGH
-    state.note_drop(str(exe), "abc", "ev1", score=90)
+    fresh = evaluate(proc, L, state)
+    assert "proc.dropped_file_executed" not in ids(fresh) and "proc.young_image" in ids(fresh)
+    state.note_drop(str(exe), "abc", "ev1", score=25)  # e.g. a signed installer helper
+    calm = evaluate(proc, L, state)
+    assert ids(calm) == {"proc.dropped_file_executed"} and summarize(calm)[1] is Severity.MEDIUM
+    state.note_drop(str(exe), "abc", "ev1", score=50)  # an unsigned program
+    assert summarize(evaluate(proc, L, state))[1] is Severity.HIGH
+    state.note_drop(str(exe), "abc", "ev1", score=90)  # matched a signature
     assert summarize(evaluate(proc, L, state))[1] is Severity.CRITICAL
     old = evaluate(proc, L, None, now=exe.stat().st_mtime + 86400)
     assert "proc.young_image" not in ids(old)

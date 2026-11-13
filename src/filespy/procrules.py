@@ -258,19 +258,18 @@ def evaluate(
     exe = proc.exe
     location = classify_location(exe, platform) if exe else "other"
 
-    if exe and state is not None:
-        drop = state.lookup_drop(exe.removesuffix(" (deleted)"))
-        if drop is not None:
-            floor = C if drop.score >= 70 else H
-            out.append(Indicator("proc.dropped_file_executed", 60,
-                                 "This program is a file that was dropped while FileSpy was watching", "T1204.002", floor))
-    if location == "temp":
+    drop = state.lookup_drop(exe.removesuffix(" (deleted)")) if exe and state is not None else None
+    if drop is not None:
+        floor = C if drop.score >= 90 else H if drop.score >= 40 else None
+        out.append(Indicator("proc.dropped_file_executed", 50,
+                             "This program is a file that was dropped while FileSpy was watching", "T1204.002", floor))
+    elif location == "temp":
         out.append(Indicator("proc.image_in_temp", 25, "The program is running from a temporary folder", "T1204.002"))
     elif location == "startup":
         out.append(Indicator("proc.image_in_startup", 25, "The program is running from a startup location", "T1547.001"))
     elif location == "user_writable":
         out.append(Indicator("proc.image_user_writable", 10, "The program is running from a user-writable folder", ""))
-    if exe and location in ("temp", "user_writable", "startup", "other") and young_minutes > 0:
+    if drop is None and exe and location in ("temp", "user_writable", "startup", "other") and young_minutes > 0:
         try:
             info = os.stat(exe)
             age = (now or time.time()) - max(info.st_mtime, info.st_ctime)

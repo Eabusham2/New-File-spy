@@ -178,18 +178,26 @@ class FileAnalyzer:
 
     def _inspect(self, report: FileReport, info: os.stat_result) -> None:
         cfg, name = self.cfg, basename(report.path)
-        scan_limit = cfg.max_scan_mb * 1024 * 1024
+        ext, loc = report.ext, report.location
         with fileinfo.open_regular(report.path) as handle:
-            data = handle.read(scan_limit)
-            if report.size <= cfg.max_hash_mb * 1024 * 1024:
+            head = handle.read(4096)
+            kind = report.kind = fileinfo.detect_kind(head, name)
+            runnable = (
+                kind in fileinfo.RUNNABLE_KINDS
+                or ext in fileinfo.RISKY_EXTS
+                or (kind == "ole" and ext in ("msi", "msp", "mst", ""))
+            )
+            # Programs and scripts are read in full (up to the limit); other files only get a quick look.
+            limit = cfg.max_scan_mb * 1024 * 1024 if runnable else min(cfg.max_scan_mb, 1) * 1024 * 1024
+            data = head + handle.read(max(0, limit - len(head)))
+            hash_limit = cfg.max_hash_mb * 1024 * 1024 if runnable else min(cfg.max_hash_mb, 16) * 1024 * 1024
+            if report.size <= hash_limit:
                 handle.seek(0)
-                report.sha256, report.md5, _ = fileinfo.hash_stream(handle, cfg.max_hash_mb * 1024 * 1024)
-        report.kind = fileinfo.detect_kind(data[:4096], name)
+                report.sha256, report.md5, _ = fileinfo.hash_stream(handle, hash_limit)
         report.entropy = round(fileinfo.shannon_entropy(data[: 4 * 1024 * 1024]), 2)
-        kind, ext, loc = report.kind, report.ext, report.location
-        runnable = kind in fileinfo.RUNNABLE_KINDS or ext in fileinfo.RISKY_EXTS
         report.interesting = runnable or ext in fileinfo.CONTAINER_EXTS
         ind = report.indicators
+        pe = fileinfo.parse_pe(data, report.size) if kind == "pe" else None
 
         if report.sha256 and (report.sha256 in self.good_hashes or report.sha256 in self._self_hashes):
             report.details["allowlisted"] = True
@@ -202,16 +210,19 @@ class FileAnalyzer:
         ind.extend(name_indicators(name, kind))
 
         native = kind in fileinfo.NATIVE_KINDS
+        # A library, or a program that at least carries a signature, is common during normal installs.
+        calm = pe is not None and (pe.is_dll or pe.signed)
+        clickable = kind == "script" and (ext in fileinfo.CLICKABLE_SCRIPT_EXTS or (os.name != "nt" and info.st_mode & 0o111))
         if native and loc == "startup":
             ind.append(Indicator("file.program_in_startup", 70, "A program was placed in a location that runs automatically at login", "T1547.001"))
         elif runnable and loc == "startup":
             ind.append(Indicator("file.runnable_in_startup", 55, "A script or shortcut was placed in a location that runs automatically at login", "T1547.001"))
         elif native and loc == "temp":
-            ind.append(Indicator("file.program_in_temp", 40, "A program was written to a temporary folder", "T1105"))
+            ind.append(Indicator("file.program_in_temp", 25 if calm else 40, "A program was written to a temporary folder", "T1105"))
         elif native and loc == "user_writable":
-            ind.append(Indicator("file.program_in_user_dir", 40, "A program was written to a user-writable folder", "T1105"))
-        elif kind in ("script", "lnk") and loc in ("temp", "user_writable") and ext in fileinfo.RISKY_EXTS:
-            ind.append(Indicator("file.script_dropped", 20, "A script or shortcut was written to a user-writable folder", "T1105"))
+            ind.append(Indicator("file.program_in_user_dir", 25 if calm else 40, "A program was written to a user-writable folder", "T1105"))
+        elif clickable and loc in ("temp", "user_writable"):
+            ind.append(Indicator("file.script_dropped", 20, "A script that runs when opened was written to a user-writable folder", "T1105"))
         if native and ext in fileinfo.DECOY_EXTS:
             ind.append(Indicator("file.type_mismatch", 45, f"This is a program but it is named like a .{ext} file", "T1036.008"))
         elif native and ext and ext not in fileinfo.NATIVE_EXTS and ext != "tmp" and self.platform == "win32":
@@ -223,21 +234,19 @@ class FileAnalyzer:
         if native and os.name != "nt" and info.st_mode & stat.S_ISUID:
             ind.append(Indicator("file.setuid", 45, "The program runs with its owner's privileges (setuid)", "T1548.001"))
 
-        if kind == "pe":
-            pe = fileinfo.parse_pe(data, report.size)
-            if pe is not None:
-                report.details["pe"] = {
-                    "dll": pe.is_dll, "dotnet": pe.is_dotnet, "x64": pe.is_64bit, "signature_present": pe.signed,
-                    "sections": [s[0] for s in pe.sections][:16], "max_section_entropy": pe.max_entropy,
-                }
-                if pe.packer:
-                    ind.append(Indicator("file.packed", 25, f"Packed with {pe.packer}, which hides the real code", "T1027.002"))
-                elif pe.max_entropy >= cfg.entropy_threshold:
-                    ind.append(Indicator("file.high_entropy", 20, f"Contains encrypted or compressed code (entropy {pe.max_entropy})", "T1027.002"))
-                if pe.writable_code:
-                    ind.append(Indicator("file.writable_code", 10, "Has a code section that can rewrite itself", "T1027"))
-                if not pe.signed and loc in ("temp", "user_writable", "startup"):
-                    ind.append(Indicator("file.unsigned", 10, "Carries no digital signature", ""))
+        if pe is not None:
+            report.details["pe"] = {
+                "dll": pe.is_dll, "dotnet": pe.is_dotnet, "x64": pe.is_64bit, "signature_present": pe.signed,
+                "sections": [s[0] for s in pe.sections][:16], "max_section_entropy": pe.max_entropy,
+            }
+            if pe.packer:
+                ind.append(Indicator("file.packed", 25, f"Packed with {pe.packer}, which hides the real code", "T1027.002"))
+            elif pe.max_entropy >= cfg.entropy_threshold:
+                ind.append(Indicator("file.high_entropy", 20, f"Contains encrypted or compressed code (entropy {pe.max_entropy})", "T1027.002"))
+            if pe.writable_code:
+                ind.append(Indicator("file.writable_code", 10, "Has a code section that can rewrite itself", "T1027"))
+            if not pe.signed and not pe.is_dll and loc in ("temp", "user_writable", "startup"):
+                ind.append(Indicator("file.unsigned", 10, "Carries no digital signature", ""))
         zone = fileinfo.read_zone_identifier(report.path)
         if zone:
             report.details["zone"] = zone

@@ -30,6 +30,8 @@ DEFAULT_EXCLUDES = [
     "*/library/caches/firefox/*",
     # Windows shell and app-container noise.
     "*/appdata/local/packages/*",
+    "*/appdata/roaming/microsoft/windows/recent/*",
+    "*/appdata/roaming/microsoft/office/recent/*",
     "*/appdata/local/microsoft/windows/webcache/*",
     "*/appdata/local/microsoft/windows/explorer/*",
     "*/appdata/local/microsoft/windows/notifications/*",
@@ -60,7 +62,6 @@ class FilesCfg:
     settle_seconds: float = 1.0
     max_settle_seconds: float = 20.0
     poll_interval: float = 2.0
-    rescan_interval: float = 60.0
     burst_threshold: int = 40  # renames/rewrites of user files inside burst_window
     burst_window: float = 10.0
 
@@ -98,7 +99,7 @@ class NetworkCfg:
 
 @dataclass
 class DetectionCfg:
-    max_scan_mb: int = 32  # bytes of each file searched for signatures
+    max_scan_mb: int = 16  # megabytes of each file searched for signatures
     max_hash_mb: int = 512  # larger files are not hashed
     entropy_threshold: float = 7.2
     rules_files: list[str] = field(default_factory=list)  # extra JSON rule files
@@ -210,7 +211,6 @@ class Config:
         floor(self.files, "settle_seconds", 0.05)
         floor(self.files, "max_settle_seconds", self.files.settle_seconds)
         floor(self.files, "poll_interval", 0.2)
-        floor(self.files, "rescan_interval", 5.0)
         floor(self.files, "burst_threshold", 5)
         floor(self.autoruns, "interval", 0.5)
         floor(self.settings, "interval", 0.5)

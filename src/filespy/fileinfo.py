@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import BinaryIO
 
 NATIVE_KINDS = frozenset({"pe", "elf", "macho"})
-RUNNABLE_KINDS = frozenset({"pe", "elf", "macho", "script", "lnk", "ole", "html"})
+RUNNABLE_KINDS = frozenset({"pe", "elf", "macho", "script", "lnk"})
 
 NATIVE_EXTS = frozenset({
     "exe", "dll", "scr", "com", "pif", "cpl", "sys", "ocx", "drv", "efi", "msi", "msp", "mst",
@@ -25,6 +25,11 @@ SCRIPT_EXTS = frozenset({
     "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "bat", "cmd", "sct", "wsc",
     "reg", "inf", "jar", "py", "pyw", "sh", "bash", "zsh", "command", "scpt", "applescript", "pl", "rb",
     "php", "lua", "msc", "xsl", "application", "appref-ms", "settingcontent-ms", "desktop", "service", "plist",
+})
+#: Script types that run when opened, as opposed to library source code.
+CLICKABLE_SCRIPT_EXTS = frozenset({
+    "ps1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "bat", "cmd", "sct", "wsc", "jar", "reg", "msc",
+    "command", "scpt", "desktop", "application", "appref-ms", "settingcontent-ms",
 })
 SHORTCUT_EXTS = frozenset({"lnk", "url", "scf", "library-ms", "search-ms", "website"})
 MACRO_EXTS = frozenset({"docm", "xlsm", "pptm", "dotm", "xlam", "xll", "xlsb", "one", "chm"})
