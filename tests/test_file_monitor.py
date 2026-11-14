@@ -252,3 +252,78 @@ def test_unreadable_file_is_retried_then_reported(make_ctx, tmp_path):
     finally:
         monitor.stop()
         monitor.join()
+
+
+def test_timestamp_that_keeps_moving_does_not_block_the_report(make_ctx, tmp_path, monkeypatch):
+    """If the reported modification time of a finished file will not hold still, it must still be examined."""
+    import itertools
+
+    from filespy.monitors import files as files_module
+
+    watched = tmp_path / "w"
+    watched.mkdir()
+    counter = itertools.count()
+    real = files_module._signature
+
+    def restless(path):
+        signature = real(path)
+        return None if signature is None else (signature[0], signature[1] + next(counter))
+
+    monkeypatch.setattr(files_module, "_signature", restless)
+    ctx = make_ctx(files__settle_seconds=0.1, files__max_settle_seconds=60.0, files__backend="polling")
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        (watched / "restless.exe").write_bytes(make_pe())
+        assert wait_for(lambda: file_events(ctx, "created"), 10), "a moving timestamp blocked the report"
+        time.sleep(1.5)
+        monitor._push("modified", str(watched / "restless.exe"), "")
+        time.sleep(1.5)
+        reports = [e for e in file_events(ctx) if "restless.exe" in e.subject]
+        assert len(reports) == 1, "an unchanged file was reported again"
+    finally:
+        monitor.stop()
+        monitor.join()
+    summary = [e for e in ctx.bus.find("system", "info") if e.title.startswith("File monitor:")]
+    assert summary and "1 reported" in summary[0].title
+
+
+def test_replacing_a_file_that_was_waiting_as_modified_counts_as_a_new_file(make_ctx, tmp_path):
+    watched = tmp_path / "w"
+    watched.mkdir()
+    ctx = make_ctx(files__settle_seconds=0.3, files__backend="polling")
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        target = watched / "swap.exe"
+        monitor._push("modified", str(target), "")  # a change notice arrives before the creation notice
+        time.sleep(0.25)
+        target.write_bytes(make_pe())
+        monitor._push("created", str(target), "")
+        events = wait_for(lambda: [e for e in file_events(ctx) if "swap.exe" in e.subject], 10)
+        assert events and events[0].action == "created"
+    finally:
+        monitor.stop()
+        monitor.join()
+
+
+def test_report_how_stable_file_times_are_on_this_platform(tmp_path):
+    """Never fails: records, as a warning in the test summary, what repeated looks at one file return."""
+    import warnings
+
+    from filespy.monitors.files import _signature
+
+    target = tmp_path / "probe.exe"
+    target.write_bytes(make_pe())
+    seen = []
+    for _ in range(12):
+        seen.append(_signature(str(target)))
+        os.path.realpath(str(target))
+        time.sleep(0.1)
+    distinct = sorted(set(seen), key=seen.index)
+    if len(distinct) > 1:
+        warnings.warn(f"file signature changed without the file being written: {distinct[:6]}", stacklevel=1)

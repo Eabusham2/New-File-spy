@@ -287,7 +287,8 @@ def evaluate(
         try:
             info = os.stat(exe)
             age = (now or time.time()) - max(info.st_mtime, info.st_ctime)
-            if 0 <= age < young_minutes * 60:
+            # A coarse system clock can lag a file's timestamp by a few milliseconds, so allow a little skew.
+            if -5 <= age < young_minutes * 60:
                 out.append(Indicator("proc.young_image", 20, "The program file was created or changed only minutes ago", "T1204.002"))
         except OSError:
             pass

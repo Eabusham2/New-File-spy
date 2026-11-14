@@ -67,6 +67,7 @@ class _Pending:
     signature: tuple[int, int] | None = None
     closed: bool = False
     not_before: float = 0.0
+    jitter: int = 0  # consecutive looks where the time changed but the size did not
 
 
 class PollingScanner:
@@ -185,6 +186,8 @@ class FileMonitor(Monitor):
         self._recent: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._checked: dict[str, float] = {}
         self._retries: dict[str, int] = {}
+        self._reported: dict[str, str] = {}  # path -> SHA-256 of the content last reported
+        self.stats = {"events": 0, "examined": 0, "reported": 0}
         self._burst: deque[tuple[float, str, str]] = deque()
         self._burst_quiet_until = 0.0
         self._lost = 0
@@ -236,6 +239,9 @@ class FileMonitor(Monitor):
         return failed
 
     def teardown(self) -> None:
+        waiting = len(self._pending) + len(self._inflight)
+        self.system("info", f"File monitor: {self.stats['events']} change events, {self.stats['examined']} files examined, "
+                            f"{self.stats['reported']} reported, {waiting} still waiting, {self._lost} skipped")
         if self._observer is not None:
             try:
                 self._observer.stop()
@@ -280,6 +286,7 @@ class FileMonitor(Monitor):
             self.system("warning", "File events arrived faster than they could be processed; some were skipped")
 
     def _handle(self, kind: str, path: str, dest: str, now: float) -> None:
+        self.stats["events"] += 1
         if kind == "moved":
             self._pending.pop(path, None)
             if dest and not self._excluded(dest):
@@ -313,7 +320,13 @@ class FileMonitor(Monitor):
             self._on_deleted(path)
 
     def _add_pending(self, path: str, action: str, now: float, renamed_from: str = "", not_before: float = 0.0) -> None:
-        if path in self._pending:
+        existing = self._pending.get(path)
+        if existing is not None:
+            if action != "modified" and existing.action == "modified":
+                # The file was replaced while a change to the old one was waiting: it is a new file now.
+                existing.action, existing.renamed_from, existing.not_before = action, renamed_from, 0.0
+                if self.ctx.state.lookup_drop(path) is None:
+                    self.ctx.state.note_drop(path)
             return
         if len(self._pending) >= MAX_PENDING:
             self._lost += 1
@@ -350,6 +363,7 @@ class FileMonitor(Monitor):
         self._recent.pop(path, None)
         self._checked.pop(path, None)
         self._retries.pop(path, None)
+        self._reported.pop(path, None)
         name = sanitize.clean(basename(path), 120)
         if pending is not None and pending.action != "modified":
             self.ctx.state.forget_drop(path)
@@ -383,9 +397,14 @@ class FileMonitor(Monitor):
                 self._on_vanished(path, pending)
                 continue
             if not forced and signature != pending.signature:
-                pending.signature = signature  # still changing: look again after another quiet period
+                same_size = pending.signature is not None and signature[0] == pending.signature[0]
+                pending.jitter = pending.jitter + 1 if same_size else 0
+                pending.signature = signature
                 pending.checked = now
-                continue
+                if pending.jitter < 2:
+                    continue  # still changing: look again after another quiet period
+                # The size is steady and only the timestamp keeps moving (seen on some
+                # Windows and Python combinations): the file is complete.
             del self._pending[path]
             if self._recent.get(path) == signature:
                 self._checked[path] = now  # unchanged since it was examined
@@ -401,6 +420,7 @@ class FileMonitor(Monitor):
         while len(self._recent) > 20000:
             old, _ = self._recent.popitem(last=False)
             self._checked.pop(old, None)
+            self._reported.pop(old, None)
 
     def _on_vanished(self, path: str, pending: _Pending) -> None:
         if pending.action == "modified":
@@ -416,9 +436,12 @@ class FileMonitor(Monitor):
         """Runs on a worker thread."""
         try:
             report = self.ctx.analyzer.analyze(path)
+            self.stats["examined"] += 1
             if not report.exists:
                 self._on_vanished(path, pending)
                 return
+            if pending.action == "modified" and report.sha256 and self._reported.get(path) == report.sha256:
+                return  # only its metadata changed; the content is what was already reported
             if report.error:
                 # It exists but cannot be read right now: still locked by whatever wrote it, or by a scanner.
                 attempt = self._retries.get(path, 0) + 1
@@ -453,6 +476,9 @@ class FileMonitor(Monitor):
             if pending.renamed_from:
                 details["renamed_from"] = pending.renamed_from
             event = self.emit("file", pending.action, title, path, report.indicators, details)
+            self.stats["reported"] += 1
+            if report.sha256:
+                self._reported[path] = report.sha256
             if report.interesting:
                 self.ctx.state.note_drop(path, report.sha256, event.id, event.score)
             elif pending.action != "modified":

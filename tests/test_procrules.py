@@ -175,6 +175,9 @@ def test_dropped_file_executed_and_young_image(tmp_path):
     assert summarize(evaluate(proc, L, state))[1] is Severity.CRITICAL
     old = evaluate(proc, L, None, now=exe.stat().st_mtime + 86400)
     assert "proc.young_image" not in ids(old)
+    # A coarse clock can read slightly earlier than the file's own timestamp (Windows, Python 3.10).
+    skewed = evaluate(proc, L, None, now=exe.stat().st_mtime - 0.01)
+    assert "proc.young_image" in ids(skewed)
 
 
 def test_file_created_during_the_session_counts_as_dropped_even_before_it_is_reported(tmp_path):
