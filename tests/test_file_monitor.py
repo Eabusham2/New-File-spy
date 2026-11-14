@@ -48,6 +48,7 @@ def test_eicar_drop_is_critical(running):
 
 def test_ordinary_files_stay_quiet_unless_asked(running):
     ctx, monitor, watched = running
+    ctx.config.files.report_all = False  # listing every file is the default; this checks it can be turned off
     (watched / "notes.txt").write_text("hello")
     (watched / "trigger.exe").write_bytes(make_pe())
     assert wait_for(lambda: file_events(ctx, "created"))
@@ -342,11 +343,12 @@ def test_program_written_into_a_file_that_started_empty_is_detected(make_ctx, tm
         target.write_bytes(b"")
         assert wait_for(lambda: str(target) in monitor._recent, 10)  # examined while still empty
         wait_for(monitor.idle)
-        assert not ctx.bus.find("file")
+        assert all(e.severity is Severity.INFO for e in ctx.bus.find("file"))  # listed, but nothing to alert on
         target.write_bytes(make_elf())
-        events = wait_for(lambda: [e for e in ctx.bus.find("file") if "payload" in e.subject], 15)
+        events = wait_for(lambda: [e for e in ctx.bus.find("file") if "payload" in e.subject
+                                   and e.details.get("kind") == "elf"], 15)
         assert events, "content written after the first look was never examined"
-        assert events[0].action == "created" and events[0].details["kind"] == "elf"
+        assert events[0].action == "created" and "program" in events[0].title
         assert wait_for(lambda: (r := ctx.state.lookup_drop(str(target))) and r.event_id)
     finally:
         monitor.stop()
@@ -537,3 +539,27 @@ def test_continuous_activity_does_not_hide_a_new_drop(running):
     finally:
         stop.set()
         churner.join(5)
+
+
+def test_ordinary_files_are_listed_once_not_on_every_edit(make_ctx, tmp_path):
+    watched = tmp_path / "w"
+    watched.mkdir()
+    ctx = make_ctx(files__backend="polling")
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        log = watched / "app.log"
+        log.write_text("start\n")
+        assert wait_for(lambda: [e for e in ctx.bus.find("file") if "app.log" in e.subject], 10)
+        for n in range(5):
+            time.sleep(0.3)
+            with open(log, "a") as handle:
+                handle.write(f"line {n}\n")
+            monitor._push("modified", str(log), "")
+        time.sleep(3)
+        assert len([e for e in ctx.bus.find("file") if "app.log" in e.subject]) == 1
+    finally:
+        monitor.stop()
+        monitor.join()

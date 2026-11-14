@@ -117,10 +117,7 @@ def window(tmp_path):
     if controller.state == "watching":
         controller.stop()
     wait_for(lambda: controller.state == "stopped", 30)
-    try:
-        root.destroy()
-    except tk.TclError:
-        pass
+    main_window.dispose()
 
 
 def pump(root, condition, timeout=30.0):
@@ -172,3 +169,126 @@ def test_window_shows_alerts_filters_them_and_saves_settings(window):
     assert pump(root, lambda: main_window.toggle_button.cget("text") == "Start watching", 10)
     main_window.clear()
     assert not main_window.tree.get_children()
+
+
+def file_event(path, action="created", severity_score=0, sha256="ab" * 32, kind="pe", size=1024):
+    indicators = [Indicator("x", severity_score, "why")] if severity_score else []
+    return make_event("file", action, f"New file: {os.path.basename(path)}", str(path), indicators,
+                      {"path": str(path), "sha256": sha256, "kind": kind, "size": size})
+
+
+def test_file_list_keeps_one_row_per_file_with_its_latest_state(tmp_path):
+    files = gui.FileList(limit=3)
+    a = tmp_path / "a.exe"
+    assert files.note(file_event(a, severity_score=80)).status == "New"
+    files.note(file_event(a, "modified", severity_score=25, sha256="cd" * 32))
+    entry = files.note(file_event(a, "deleted", sha256=""))
+    assert len(files.items) == 1 and entry.status == "Deleted" and entry.history == ["New", "Changed", "Deleted"]
+    assert entry.severity is Severity.LOW and entry.sha256 == "cd" * 32  # deletion keeps the last examination
+    quarantined = make_event("system", "response", "Quarantined", str(a), details={"path": str(a), "quarantine_id": "q"})
+    assert files.note(quarantined).status == "Quarantined"
+    for n in range(4):
+        files.note(file_event(tmp_path / f"f{n}.txt", kind="text"))
+    assert len(files.items) == 3 and [e.name for e in files.visible()] == ["f3.txt", "f2.txt", "f1.txt"]
+    assert [e.name for e in files.visible("F2")] == ["f2.txt"]
+    assert files.note(make_event("process", "started", "p")) is None
+    row = files.get(str(tmp_path / "f3.txt")).row()
+    assert row[1] == "New" and row[2] == "f3.txt" and row[3] == "Text" and row[6] == "Check / Upload"
+    assert gui.human_size(512) == "512 bytes" and gui.human_size(5 * 1024 * 1024) == "5.0 MB" and gui.human_size(None) == ""
+    hostile = gui.FileEntry(str(tmp_path / "x\u202egpj.exe"), "New", file_event(a), Severity.HIGH, 0.0)
+    assert "\u202e" not in "".join(hostile.row())
+
+
+def test_elevation_is_only_asked_for_on_windows_when_needed():
+    import argparse
+
+    def args(**kw):
+        base = {"no_elevate": False, "elevated": False, "selftest": False, "smoke_gui": False,
+                "data_dir": None, "config": None, "start": False}
+        base.update(kw)
+        return argparse.Namespace(**base)
+
+    assert gui.needs_elevation(args(), "win32", admin=False)
+    assert not gui.needs_elevation(args(), "win32", admin=True)
+    assert not gui.needs_elevation(args(), "linux", admin=False)
+    for flag in ("no_elevate", "elevated", "selftest", "smoke_gui"):
+        assert not gui.needs_elevation(args(**{flag: True}), "win32", admin=False)
+    assert gui.forwarded_arguments(args(data_dir="D", config="C", start=True)) == ["--data-dir", "D", "--config", "C", "--start"]
+    assert gui.forwarded_arguments(args()) == []
+    if os.name != "nt":
+        assert gui.relaunch_as_admin(["--start"]) is False
+
+
+def test_files_tab_lists_every_file_and_offers_virustotal(window, monkeypatch):
+    from tkinter import messagebox
+
+    main_window, controller, watched, root = window
+    opened, revealed, said = [], [], []
+    monkeypatch.setattr("filespy.virustotal.open_url", lambda url: opened.append(url) or True)
+    monkeypatch.setattr("filespy.virustotal.reveal", lambda path: revealed.append(path) or True)
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: said.append("asked") or True)
+    monkeypatch.setattr(messagebox, "showinfo", lambda *a, **k: said.append("info"))
+    monkeypatch.setattr(messagebox, "showerror", lambda title, text, **k: said.append("error:" + text))
+    monkeypatch.delenv("FILESPY_VT_KEY", raising=False)
+
+    main_window.toggle()
+    assert pump(root, lambda: controller.state == "watching", 60), controller.error
+    (watched / "notes.txt").write_text("an ordinary file")
+    (watched / "tool.exe").write_bytes(make_pe())
+    assert pump(root, lambda: len(main_window.files_tree.get_children()) >= 2), "files did not reach the Files tab"
+    names = {main_window.files_tree.item(i, "values")[2]: i for i in main_window.files_tree.get_children()}
+    assert {"notes.txt", "tool.exe"} <= set(names)
+    assert "files" in main_window.counts.get()
+
+    main_window.notebook.select(1)
+    main_window.files_tree.selection_set(names["tool.exe"])
+    root.update()
+    assert main_window.on_files_tab() and "Status: New" in main_window.details.get("1.0", "end")
+    main_window.lookup_virustotal()  # the hash is known: opens straight away, nothing is sent
+    assert opened and opened[-1].startswith("https://www.virustotal.com/gui/file/")
+    main_window.copy_path()
+    assert root.clipboard_get().endswith("tool.exe")
+
+    main_window.upload_virustotal()  # no API key: upload page plus the file in a folder window
+    assert said[:2] == ["asked", "info"] and opened[-1] == "https://www.virustotal.com/gui/home/upload"
+    assert revealed and revealed[-1].endswith("tool.exe")
+
+    uploaded = []
+
+    def fake_upload(path, key):
+        uploaded.append((os.path.basename(path), key))
+        return virustotal_result(path)
+
+    monkeypatch.setattr("filespy.virustotal.upload", fake_upload)
+    controller.config.detection.virustotal_api_key = "k-1"
+    main_window.upload_virustotal()
+    assert pump(root, lambda: not main_window.jobs, 10)
+    assert uploaded == [("tool.exe", "k-1")] and opened[-1].endswith("/" + "ef" * 32)
+    assert "Uploaded tool.exe" in main_window.status.get()
+
+    monkeypatch.setattr("filespy.virustotal.upload", lambda path, key: (_ for _ in ()).throw(
+        __import__("filespy.virustotal", fromlist=["x"]).VirusTotalError("quota used up")))
+    main_window.upload_virustotal()
+    assert pump(root, lambda: not main_window.jobs, 10)
+    assert said[-1].endswith("quota used up")
+
+    item = names["notes.txt"]
+    main_window.files_tree.selection_set(item)
+    root.update()
+    assert main_window._selected_sha256() and main_window._selected_path().endswith("notes.txt")
+    assert main_window.menu.index("end") >= 6 and main_window.vt_menu.index("end") == 1
+
+    dialog = main_window.settings()
+    root.update()
+    dialog.vt_key.set("  new-key  ")
+    dialog.save()
+    assert controller.config.detection.virustotal_api_key == "new-key"
+    main_window.find.set("notes")
+    root.update()
+    assert [main_window.files_tree.item(i, "values")[2] for i in main_window.files_tree.get_children()] == ["notes.txt"]
+
+
+def virustotal_result(path):
+    from filespy.virustotal import UploadResult, report_url
+
+    return UploadResult("ef" * 32, "analysis-1", report_url("ef" * 32))

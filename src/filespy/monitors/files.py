@@ -249,7 +249,7 @@ class FileMonitor(Monitor):
         self._recent: OrderedDict[str, tuple[int, int]] = OrderedDict()
         self._checked: dict[str, float] = {}
         self._retries: dict[str, int] = {}
-        self._reported: dict[str, str] = {}  # path -> SHA-256 of the content last reported
+        self._reported: dict[str, tuple[str, bool]] = {}  # path -> (SHA-256 last reported, was it worth an alert)
         self._born: dict[str, float] = {}  # path -> when it was first examined
         self._relooks: dict[str, int] = {}  # path -> fruitless re-examinations so far (drives a back-off)
         self._truncation_reported = False
@@ -533,7 +533,9 @@ class FileMonitor(Monitor):
         if self.stopping:
             return
         try:
-            first_report = path not in self._reported
+            previous = self._reported.get(path)
+            # Not yet reported as something runnable: an ordinary or empty file listed earlier counts as new.
+            first_report = previous is None or not previous[1]
             if pending.action == "modified" and first_report and self._head_is_boring(path):
                 self._relooks[path] = self._relooks.get(path, 0) + 1
                 return  # still nothing runnable in it
@@ -542,7 +544,7 @@ class FileMonitor(Monitor):
             if not report.exists:
                 self._on_vanished(path, pending)
                 return
-            if pending.action == "modified" and report.sha256 and self._reported.get(path) == report.sha256:
+            if pending.action == "modified" and report.sha256 and previous is not None and previous[0] == report.sha256:
                 self._relooks[path] = self._relooks.get(path, 0) + 1
                 return  # only its metadata changed; the content is what was already reported
             if report.error:
@@ -563,7 +565,11 @@ class FileMonitor(Monitor):
             if report.kind in ("link", "special"):
                 self.ctx.state.forget_drop(path)
                 return
-            if not (report.interesting or report.indicators or self.ctx.config.files.report_all):
+            worth_alert = bool(report.interesting or report.indicators)
+            if not worth_alert and (pending.action == "modified" or not self.ctx.config.files.report_all):
+                # Ordinary files are listed once, when they appear; their later edits are not news.
+                if report.sha256:
+                    self._reported[path] = (report.sha256, False)
                 if pending.action != "modified":
                     self.ctx.state.forget_drop(path)
                 return
@@ -571,7 +577,7 @@ class FileMonitor(Monitor):
             label = kind_label(report)
             action = pending.action
             if action == "modified" and first_report:
-                action = "created"  # it was created harmless a moment ago and only now received this content
+                action = "created"  # it was created harmless (or empty) and only now received this content
             if action == "modified":
                 title = f"A {label} was modified: {name}"
             elif action == "renamed":
@@ -585,7 +591,7 @@ class FileMonitor(Monitor):
             self.stats["reported"] += 1
             self._relooks.pop(path, None)
             if report.sha256:
-                self._reported[path] = report.sha256
+                self._reported[path] = (report.sha256, worth_alert)
             if report.interesting:
                 self.ctx.state.note_drop(path, report.sha256, event.id, event.score)
             elif pending.action != "modified":

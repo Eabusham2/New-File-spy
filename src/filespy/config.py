@@ -58,7 +58,7 @@ class FilesCfg:
     exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     recursive: bool = True
     backend: str = "auto"  # auto | watchdog | polling
-    report_all: bool = False  # also record ordinary (non-executable) files at INFO
+    report_all: bool = True  # record every new file; ordinary ones at INFO, so they show on the Files tab
     settle_seconds: float = 1.0
     max_settle_seconds: float = 20.0
     poll_interval: float = 2.0

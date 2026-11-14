@@ -513,6 +513,45 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return 0 if passed else 1
 
 
+def cmd_vt(args: argparse.Namespace) -> int:
+    """Open a file's VirusTotal page (hash only), or upload the file when asked."""
+    from filespy import virustotal
+
+    _home, cfg, _ = _setup(args)
+    path = args.file
+    if not os.path.isfile(path):
+        raise ValueError(f"not a file: {path}")
+    if not args.upload:
+        url = virustotal.report_url(virustotal.sha256_of(path))
+        _out(url)
+        if not args.no_browser:
+            virustotal.open_url(url)
+        return 0
+    key = virustotal.api_key(cfg)
+    if not key:
+        _out("No VirusTotal API key is set, so the upload page will open and the file will be shown in a folder window;")
+        _out("drag the file onto the page. To upload from FileSpy, add a key with:")
+        _out("  filespy config set detection.virustotal_api_key YOUR-KEY")
+        if not args.no_browser:
+            virustotal.open_url(virustotal.upload_page_url())
+            virustotal.reveal(path)
+        return 0
+    if not args.yes:
+        _out(f"This sends the whole file to VirusTotal, which shares it with security companies:\n  {sanitize.clean(path, 300)}")
+        try:
+            answer = input("Upload it? [y/N] ")
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            _out("Nothing was uploaded.")
+            return 1
+    result = virustotal.upload(path, key)
+    _out(f"Uploaded. Analysis: {result.url}")
+    if not args.no_browser:
+        virustotal.open_url(result.url)
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from filespy.gui import main as gui_main
 
@@ -523,6 +562,8 @@ def cmd_gui(args: argparse.Namespace) -> int:
         forwarded += ["--config", args.config]
     if args.start:
         forwarded.append("--start")
+    if args.no_elevate:
+        forwarded.append("--no-elevate")
     return gui_main(forwarded)
 
 
@@ -623,8 +664,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--secrets", action="store_true", help="include the webhook address and API key instead of hiding them")
     p.set_defaults(func=cmd_config)
 
+    p = sub.add_parser("vt", help="open a file's VirusTotal page, or upload the file to VirusTotal")
+    p.add_argument("file")
+    p.add_argument("--upload", action="store_true", help="send the whole file to VirusTotal (asks first)")
+    p.add_argument("-y", "--yes", action="store_true", help="with --upload: do not ask for confirmation")
+    p.add_argument("--no-browser", action="store_true", help="print the address instead of opening it")
+    p.set_defaults(func=cmd_vt)
+
     p = sub.add_parser("gui", help="open the FileSpy window")
     p.add_argument("--start", action="store_true", help="start watching as soon as the window opens")
+    p.add_argument("--no-elevate", action="store_true", help="do not ask for administrator rights on Windows")
     p.set_defaults(func=cmd_gui)
 
     sub.add_parser("doctor", help="check that everything FileSpy needs is in place").set_defaults(func=cmd_doctor)
@@ -637,6 +686,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     from filespy.quarantine import QuarantineError
+    from filespy.virustotal import VirusTotalError
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -657,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyError as exc:
         print(f"filespy: {exc.args[0] if exc.args else exc}", file=sys.stderr)
         return 2
-    except (QuarantineError, ValueError, OSError) as exc:
+    except (QuarantineError, VirusTotalError, ValueError, OSError) as exc:
         print(f"filespy: {exc}", file=sys.stderr)
         return 2
 

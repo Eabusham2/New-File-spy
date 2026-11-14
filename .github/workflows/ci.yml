@@ -55,11 +55,16 @@ jobs:
           python -m pip install ".[exe]"
       - name: Build FileSpy.exe (the window) and filespy-cli.exe (the command line)
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name FileSpy --collect-data filespy packaging/filespy_gui.py
+          pyinstaller --noconfirm --clean --onefile --windowed --uac-admin --name FileSpy --collect-data filespy packaging/filespy_gui.py
           pyinstaller --noconfirm --clean --onefile --console --name filespy-cli --collect-data filespy packaging/filespy_cli.py
       - name: Check that the built programs really work
         shell: pwsh
         run: |
+          # FileSpy.exe must ask for administrator rights when it starts; the command line must not.
+          python -c "import sys; data = open('dist/FileSpy.exe', 'rb').read(); sys.exit(0 if b'requireAdministrator' in data else 1)"
+          if ($LASTEXITCODE -ne 0) { throw "FileSpy.exe does not ask for administrator rights" }
+          python -c "import sys; data = open('dist/filespy-cli.exe', 'rb').read(); sys.exit(1 if b'requireAdministrator' in data else 0)"
+          if ($LASTEXITCODE -ne 0) { throw "filespy-cli.exe should not demand administrator rights" }
           $test = Start-Process -FilePath dist\FileSpy.exe -ArgumentList '--selftest', '--result-file', 'selftest.txt' -Wait -PassThru
           Get-Content selftest.txt
           if ($test.ExitCode -ne 0) { throw "FileSpy.exe self-test failed with exit code $($test.ExitCode)" }

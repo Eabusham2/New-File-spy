@@ -21,6 +21,7 @@ Runs on Windows 10/11 (the main target), Linux and macOS. Python 3.10 or newer.
 | **Security settings** | Tampering with Microsoft Defender, the firewall, UAC, SmartScreen, Windows Update, proxy and DNS, remote access, credential protection, script policy, event logging, file associations, root certificates and more (over 300 Windows settings), the hosts file, and on Linux/macOS accounts, sudo, SSH, PAM, kernel hardening, Gatekeeper, SIP and FileVault. |
 | **Running programs** | Every new process: where it runs from, its command line, what started it, whether its name imitates a system program, and whether it is a file that was just dropped. |
 | **Network** | New listening ports, and internet connections made by programs already flagged as suspicious or by Windows tools that rarely need the internet. |
+| **Every new file** | The window's Files tab lists every file that appears while FileSpy watches, one row per file, so you can see everything a program dropped. Each row can be looked up on VirusTotal by its hash, or uploaded to VirusTotal when you choose to. |
 
 Everything is stored locally and can be exported to JSON, JSON Lines, CSV, a
 self-contained HTML report, or a ZIP of all of them.
@@ -29,8 +30,12 @@ self-contained HTML report, or a ZIP of all of them.
 
 **Windows, no Python needed:** download `FileSpy.exe` from the
 [Releases page](https://github.com/Eabusham2/New-File-spy/releases) and double-click it.
-It opens the window shown below. Press **Start watching**, then run or open whatever you
-want to observe. `filespy-cli.exe` on the same page is the command line.
+It asks for administrator rights when it starts, so that it can see every user's programs
+and the system locations malware uses; say yes to the Windows prompt (if you say no, it
+does not open). Then press
+**Start watching**, and run or open whatever you want to observe. `filespy-cli.exe` on the
+same page is the command line. It runs with your normal rights unless you start it from an
+administrator terminal.
 
 The executables are built by this repository's CI from the source you see here, and each
 build is started and self-tested before it is published. They are not code-signed, so
@@ -40,6 +45,11 @@ suspicious of programs packaged this way. If that worries you, run from source i
 ![The FileSpy window showing a dropped program being executed and made persistent](docs/screenshot.png)
 
 *The window with sample alerts, captured on Linux. On Windows it uses the native look.*
+
+![The Files tab listing every new file, with VirusTotal actions](docs/screenshot-files.png)
+
+*The Files tab: every new file, newest first. Click the VirusTotal cell of a row, right-click
+the row, or use the buttons below the list to look the file up or upload it.*
 
 **From source, on any system:**
 
@@ -107,6 +117,7 @@ minimum severity on their own. The console shows low and above; everything is st
 
 | Command | What it does |
 | --- | --- |
+| `filespy vt FILE` | Open the file's VirusTotal page (sends only its hash). Add `--upload` to send the file itself, after a confirmation. |
 | `filespy gui` | Open the window: start and stop watching, a live colour-coded alert list with the reasons for each alert, export, a one-click check of the PC, quarantine, and settings. `FileSpy.exe` is this window. |
 | `filespy watch` | Monitor live. `-p FOLDER` adds a folder, `--only files,processes` picks monitors, `--export html,json` writes a report when you stop, `--json` prints JSON lines, `-v` shows informational events too. |
 | `filespy scan PATH... [-r]` | Examine files or folders once. |
@@ -166,7 +177,7 @@ The settings you are most likely to change:
 | `files.use_default_paths` | `true` | Watch the standard drop locations for this operating system. |
 | `files.paths` | empty | Extra folders to watch. |
 | `files.exclude` | browser caches, `node_modules`, `.git`, ... | Glob patterns that are ignored. |
-| `files.report_all` | `false` | Also record ordinary files (documents, pictures), not only runnable ones. |
+| `files.report_all` | `true` | List every new file, not only programs and scripts. Ordinary files are recorded quietly (INFO) and shown on the Files tab; their later edits are not reported again. |
 | `files.settle_seconds` | `1.0` | How long a new file must be quiet before it is examined. |
 | `processes.interval` | `0.5` | Seconds between checks for new programs. |
 | `processes.record_all` | `false` | Store every program start, not only suspicious ones. |
@@ -178,10 +189,28 @@ The settings you are most likely to change:
 | `detection.hash_allowlists` | empty | Hashes that are never flagged. |
 | `detection.rules_files` | empty | Extra signature files in the same JSON format as the built-in rules. |
 | `detection.yara_rules_dir` | empty | Folder of YARA rules (needs `pip install filespy[yara]`). |
-| `detection.virustotal` | `false` | Look up hashes on VirusTotal. Sends the hash only, never the file. Key in `detection.virustotal_api_key` or the `FILESPY_VT_KEY` environment variable. |
+| `detection.virustotal` | `false` | Look up the hash of every new program on VirusTotal automatically. Sends the hash only, never the file. |
+| `detection.virustotal_api_key` | empty | Your VirusTotal API key (free with an account). Needed for automatic lookups and one-click uploads; also read from the `FILESPY_VT_KEY` environment variable. It is left out of exports. |
 | `response.quarantine_min_severity` | empty (off) | Automatically quarantine dropped files at or above this severity. |
 | `response.kill_min_severity` | empty (off) | Automatically stop programs flagged at or above this severity. |
 | `storage.retention_days` | `30` | How long events are kept. |
+
+## VirusTotal
+
+Every file in the window, and any file given to `filespy vt`, can be checked on
+[VirusTotal](https://www.virustotal.com), which runs it past dozens of antivirus engines.
+
+- **Look up** opens the file's VirusTotal page in your browser. Only the file's SHA-256
+  fingerprint is used, so nothing about the file leaves your computer. If VirusTotal has
+  seen the file before, the page shows what the engines said.
+- **Upload** sends the whole file, after you confirm. With an API key in Settings, FileSpy
+  uploads it and opens the analysis page when it is done. Without a key, it opens
+  VirusTotal's upload page and shows the file selected in a folder window, ready to drag
+  onto the page (the path is also copied to the clipboard).
+
+VirusTotal shares uploaded files with security companies and others can find them, so never
+upload personal or confidential documents. Upload a file only when its hash is unknown and
+you want a verdict.
 
 ## Automatic responses (off by default)
 
@@ -245,9 +274,10 @@ The rules are data, not code: see `src/filespy/data/rules.json` and
 
 ## Privacy
 
-Everything stays on your computer. FileSpy never uploads file contents. The only network
-traffic it can produce is opt-in: a VirusTotal lookup that sends a hash, and a webhook
-you configure yourself.
+Everything stays on your computer. FileSpy never uploads a file unless you click Upload to
+VirusTotal (or run `filespy vt --upload`) and confirm. Looking a file up only opens its
+VirusTotal page by hash. Any other network traffic is opt-in: automatic hash lookups and a
+webhook, both off until you configure them.
 
 Data folder: `%LOCALAPPDATA%\FileSpy` on Windows, `~/.local/share/filespy` on Linux,
 `~/Library/Application Support/FileSpy` on macOS, or wherever `FILESPY_HOME` or
