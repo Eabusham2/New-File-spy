@@ -25,12 +25,29 @@ Runs on Windows 10/11 (the main target), Linux and macOS. Python 3.10 or newer.
 Everything is stored locally and can be exported to JSON, JSON Lines, CSV, a
 self-contained HTML report, or a ZIP of all of them.
 
-## Quick start
+## Get it
+
+**Windows, no Python needed:** download `FileSpy.exe` from the
+[Releases page](https://github.com/Eabusham2/New-File-spy/releases) and double-click it.
+It opens the window shown below. Press **Start watching**, then run or open whatever you
+want to observe. `filespy-cli.exe` on the same page is the command line.
+
+The executables are built by this repository's CI from the source you see here, and each
+build is started and self-tested before it is published. They are not code-signed, so
+Windows SmartScreen will ask before the first run, and some antivirus products are
+suspicious of programs packaged this way. If that worries you, run from source instead.
+
+![The FileSpy window showing a dropped program being executed and made persistent](docs/screenshot.png)
+
+*The window with sample alerts, captured on Linux. On Windows it uses the native look.*
+
+**From source, on any system:**
 
 ```
 pip install git+https://github.com/Eabusham2/New-File-spy.git
 filespy selftest
-filespy watch
+filespy gui          # the window
+filespy watch        # or stay in the terminal
 ```
 
 `filespy selftest` drops three harmless test files into a private temporary folder and
@@ -90,6 +107,7 @@ minimum severity on their own. The console shows low and above; everything is st
 
 | Command | What it does |
 | --- | --- |
+| `filespy gui` | Open the window: start and stop watching, a live colour-coded alert list with the reasons for each alert, export, a one-click check of the PC, quarantine, and settings. `FileSpy.exe` is this window. |
 | `filespy watch` | Monitor live. `-p FOLDER` adds a folder, `--only files,processes` picks monitors, `--export html,json` writes a report when you stop, `--json` prints JSON lines, `-v` shows informational events too. |
 | `filespy scan PATH... [-r]` | Examine files or folders once. |
 | `filespy audit` | Check what is on the machine right now: suspicious autostart entries, settings already in a dangerous state, and suspicious running programs. |
@@ -215,6 +233,8 @@ The rules are data, not code: see `src/filespy/data/rules.json` and
   and some file events may be lost.
 - Without administrator rights, other users' processes and some system locations are not
   visible. On macOS, other programs' network connections need root.
+- The Windows executables are unsigned, and the window needs a desktop session; on a
+  server without one, use the command line.
 - Scheduled tasks are read from the registry cache. Windows Management Instrumentation
   event subscriptions, COM hijacks and browser extensions are not covered yet.
 
@@ -238,7 +258,16 @@ python -m pytest
 ```
 
 The tests run on Windows, Linux and macOS in CI. Windows-only code sits behind a small
-registry interface with an in-memory fake, so the whole suite also runs on Linux.
+registry interface with an in-memory fake, so the whole suite also runs on Linux. The
+window is tested for real wherever a display exists (CI uses a virtual one on Linux).
+
+To build the Windows executables yourself, on Windows:
+
+```
+pip install ".[exe]"
+pyinstaller --onefile --windowed --name FileSpy --collect-data filespy packaging/filespy_gui.py
+pyinstaller --onefile --console --name filespy-cli --collect-data filespy packaging/filespy_cli.py
+```
 
 Topics: security, malware-detection, malware-analysis, file-monitoring, persistence-detection,
 autoruns, process-monitoring, rat-detection, threat-detection, blue-team, dfir,

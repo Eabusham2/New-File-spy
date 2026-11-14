@@ -28,10 +28,78 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests packaging
       - name: Tests
+        if: runner.os != 'Linux'
         run: python -m pytest -v
+      - name: Tests (with a virtual display, so the window is tested too)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -v
       - name: Environment check
         run: filespy doctor
       - name: End-to-end self-test
         run: filespy selftest
+
+  windows-exe:
+    name: Windows executable
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[exe]"
+      - name: Build FileSpy.exe (the window) and filespy-cli.exe (the command line)
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name FileSpy --collect-data filespy packaging/filespy_gui.py
+          pyinstaller --noconfirm --clean --onefile --console --name filespy-cli --collect-data filespy packaging/filespy_cli.py
+      - name: Check that the built programs really work
+        shell: pwsh
+        run: |
+          $test = Start-Process -FilePath dist\FileSpy.exe -ArgumentList '--selftest', '--result-file', 'selftest.txt' -Wait -PassThru
+          Get-Content selftest.txt
+          if ($test.ExitCode -ne 0) { throw "FileSpy.exe self-test failed with exit code $($test.ExitCode)" }
+          $window = Start-Process -FilePath dist\FileSpy.exe -ArgumentList '--smoke-gui', '--data-dir', 'smoke-data' -Wait -PassThru
+          if ($window.ExitCode -ne 0) { throw "FileSpy.exe could not open its window (exit code $($window.ExitCode))" }
+          dist\filespy-cli.exe version
+          if ($LASTEXITCODE -ne 0) { throw "filespy-cli.exe did not start" }
+          dist\filespy-cli.exe selftest
+          if ($LASTEXITCODE -ne 0) { throw "filespy-cli.exe self-test failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FileSpy-windows
+          path: |
+            dist/FileSpy.exe
+            dist/filespy-cli.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish the executables as a release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, windows-exe]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: FileSpy-windows
+          path: dist
+      - name: Create the release for this version, or refresh its files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c "import re, pathlib; print(re.search(r'^version = \"(.+?)\"', pathlib.Path('pyproject.toml').read_text(), re.M).group(1))")
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/FileSpy.exe dist/filespy-cli.exe --clobber
+          else
+            gh release create "$tag" dist/FileSpy.exe dist/filespy-cli.exe --target "$GITHUB_SHA" \
+              --title "FileSpy $version" \
+              --notes "FileSpy.exe opens the window. filespy-cli.exe is the command line. Built automatically from this commit; see the README for what it does and its limits."
+          fi

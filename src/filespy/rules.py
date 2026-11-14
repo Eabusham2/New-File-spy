@@ -11,11 +11,11 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
-from importlib import resources
 from pathlib import Path
 from typing import Any
 
 from filespy.events import Indicator, Severity
+from filespy.paths import package_data
 
 log = logging.getLogger("filespy")
 
@@ -113,7 +113,7 @@ class RuleSet:
 
 
 def builtin_rules_bytes() -> bytes:
-    return resources.files("filespy").joinpath("data/rules.json").read_bytes()
+    return package_data("rules.json")
 
 
 def builtin_rules_text() -> str:

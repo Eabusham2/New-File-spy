@@ -25,9 +25,13 @@ Issues = "https://github.com/Eabusham2/New-File-spy/issues"
 [project.optional-dependencies]
 yara = ["yara-python"]
 dev = ["pytest>=7", "ruff"]
+exe = ["pyinstaller>=6"]
 
 [project.scripts]
 filespy = "filespy.cli:main"
+
+[project.gui-scripts]
+filespy-gui = "filespy.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

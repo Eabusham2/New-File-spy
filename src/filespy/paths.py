@@ -173,3 +173,28 @@ def classify_location(path: str, platform: str = sys.platform) -> str:
 def basename(path: str) -> str:
     """Final component of a Windows or POSIX path, on any OS."""
     return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def package_data(name: str) -> bytes:
+    """Bytes of a file from ``filespy/data``, whether installed normally or bundled into an executable."""
+    from importlib import resources
+
+    try:
+        return resources.files("filespy").joinpath("data", name).read_bytes()
+    except (OSError, ModuleNotFoundError, TypeError, ValueError):
+        pass
+    bases = [Path(getattr(sys, "_MEIPASS", "")) / "filespy" / "data", Path(__file__).resolve().parent / "data"]
+    for base in bases:
+        candidate = base / name
+        if candidate.is_file():
+            return candidate.read_bytes()
+    raise FileNotFoundError(f"FileSpy data file is missing: {name}")
+
+
+def own_folders(data_directory: str | os.PathLike[str]) -> list[str]:
+    """Folders that belong to FileSpy itself and must never be monitored."""
+    folders = [os.fspath(data_directory)]
+    unpacked = getattr(sys, "_MEIPASS", "")  # where a one-file executable unpacks itself
+    if unpacked:
+        folders.append(unpacked)
+    return folders

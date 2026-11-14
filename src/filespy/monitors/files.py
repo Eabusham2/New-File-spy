@@ -21,7 +21,7 @@ from filespy import fileinfo, sanitize
 from filespy.analyzer import FileReport
 from filespy.events import Indicator, Severity
 from filespy.monitors.base import Monitor
-from filespy.paths import basename, default_watch_roots, drop_nested, is_excluded, is_within
+from filespy.paths import basename, default_watch_roots, drop_nested, is_excluded, is_within, own_folders
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -180,7 +180,7 @@ class FileMonitor(Monitor):
     def setup(self) -> None:
         cfg = self.ctx.config.files
         self.roots = self.resolve_roots()
-        self._data_dir = str(self.ctx.data_dir)
+        self._own = own_folders(self.ctx.data_dir)
         self._queue: queue.Queue[tuple[str, str, str]] = queue.Queue(maxsize=MAX_QUEUE)
         self._pending: dict[str, _Pending] = {}
         self._inflight: set[str] = set()
@@ -285,7 +285,7 @@ class FileMonitor(Monitor):
             self._lost += 1
 
     def _excluded(self, path: str) -> bool:
-        return is_within(path, self._data_dir) or is_excluded(path, self.ctx.config.files.exclude)
+        return any(is_within(path, folder) for folder in self._own) or is_excluded(path, self.ctx.config.files.exclude)
 
     def poll(self) -> None:
         now = time.monotonic()

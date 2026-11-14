@@ -513,6 +513,19 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return 0 if passed else 1
 
 
+def cmd_gui(args: argparse.Namespace) -> int:
+    from filespy.gui import main as gui_main
+
+    forwarded = []
+    if args.data_dir:
+        forwarded += ["--data-dir", args.data_dir]
+    if args.config:
+        forwarded += ["--config", args.config]
+    if args.start:
+        forwarded.append("--start")
+    return gui_main(forwarded)
+
+
 def cmd_version(_args: argparse.Namespace) -> int:
     _out(f"FileSpy {__version__}")
     return 0
@@ -609,6 +622,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("value", nargs="?")
     p.add_argument("--secrets", action="store_true", help="include the webhook address and API key instead of hiding them")
     p.set_defaults(func=cmd_config)
+
+    p = sub.add_parser("gui", help="open the FileSpy window")
+    p.add_argument("--start", action="store_true", help="start watching as soon as the window opens")
+    p.set_defaults(func=cmd_gui)
 
     sub.add_parser("doctor", help="check that everything FileSpy needs is in place").set_defaults(func=cmd_doctor)
     p = sub.add_parser("selftest", help="prove that alerts fire, using a harmless test file")

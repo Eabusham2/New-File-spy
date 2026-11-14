@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from importlib import resources
 from typing import Any
 
 from filespy import sanitize
+from filespy.paths import package_data
 from filespy.registry import RegistryBackend, _lookup
 from filespy.settingsmon import Change
 from filespy.settingsmon.danger import evaluate
@@ -15,8 +15,7 @@ from filespy.settingsmon.posix import WatchedFile, score_hosts
 
 
 def load_catalog() -> list[dict[str, Any]]:
-    text = resources.files("filespy").joinpath("data/windows_settings.json").read_text(encoding="utf-8")
-    return json.loads(text)["entries"]
+    return json.loads(package_data("windows_settings.json").decode("utf-8"))["entries"]
 
 
 def watched_files(env: dict[str, str] | None = None) -> list[WatchedFile]:
