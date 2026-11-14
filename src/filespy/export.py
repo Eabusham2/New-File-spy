@@ -10,7 +10,9 @@ import csv
 import html
 import io
 import json
+import os
 import platform
+import tempfile
 import time
 import zipfile
 from collections import Counter
@@ -182,9 +184,18 @@ def export_events(
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     payload = render(events, fmt, build_meta(events, cfg, filters))
-    tmp = destination.with_name(destination.name + ".part")
-    tmp.write_bytes(payload)
-    tmp.replace(destination)
+    # A freshly created, unpredictable temporary file: a link planted in the folder cannot redirect the write.
+    handle, tmp = tempfile.mkstemp(dir=destination.parent, prefix=".filespy-", suffix=".part")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(payload)
+        os.replace(tmp, destination)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return destination
 
 

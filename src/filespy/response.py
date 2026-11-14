@@ -8,7 +8,7 @@ import os
 from filespy import sanitize
 from filespy.context import Context
 from filespy.events import Event, Severity, make_event
-from filespy.paths import basename
+from filespy.paths import basename, classify_location
 from filespy.quarantine import Quarantine, QuarantineError
 
 try:
@@ -24,6 +24,18 @@ PROTECTED = frozenset({
     "services.exe", "lsass.exe", "svchost.exe", "explorer.exe", "dwm.exe", "fontdrvhost.exe", "msmpeng.exe",
     "init", "systemd", "launchd", "kernel_task", "loginwindow", "windowserver", "sshd", "dbus-daemon",
 })
+
+
+def is_protected(name: str, exe: str, platform: str) -> bool:
+    """A core system process, judged by its name and by where its program lives.
+
+    A program that merely borrows a system name (svchost.exe running from Temp) is not protected.
+    """
+    if name.lower() not in PROTECTED:
+        return False
+    if not exe:
+        return True  # kernel and protected processes do not reveal their path
+    return classify_location(exe, platform) == "system" or "\\microsoft\\windows defender\\" in exe.lower()
 
 
 def _threshold(value: str) -> Severity | None:
@@ -65,6 +77,15 @@ class Responder:
         except QuarantineError as exc:
             self._say(f"Could not quarantine {name}: {exc}", path, {"path": path, "trigger": event.id})
             return
+        if not record.original_removed:
+            # It is running or locked. Keep no copy (one would pile up per attempt) and say plainly that it is still there.
+            try:
+                self.quarantine.delete(record.id)
+            except QuarantineError:
+                pass
+            self._say(f"Could not remove {name}: it is in use or locked, and is still on disk", path,
+                      {"path": path, "sha256": record.sha256, "trigger": event.id}, Severity.HIGH)
+            return
         self.ctx.state.forget_drop(path)
         self._say(f"Quarantined {name} (id {record.id[:8]})", path,
                   {"path": path, "quarantine_id": record.id, "sha256": record.sha256, "trigger": event.id}, Severity.MEDIUM)
@@ -76,8 +97,14 @@ class Responder:
         started = float(event.details.get("create_time") or 0.0)
         name = str(event.details.get("name") or "")
         shown = sanitize.clean(name or f"pid {pid}", 80)
-        if pid <= 4 or pid in (os.getpid(), os.getppid()) or name.lower() in PROTECTED:
+        exe = str(event.details.get("exe") or "")
+        if pid <= 4 or pid in (os.getpid(), os.getppid()) or is_protected(name, exe, self.ctx.platform):
             self._say(f"Left {shown} running: it is a protected system process", str(pid), {"pid": pid, "trigger": event.id})
+            return
+        if not started:
+            # Without a start time we cannot prove the process id still belongs to the same program.
+            self._say(f"Could not stop {shown}: its start time is unknown, so it cannot be identified safely", str(pid),
+                      {"pid": pid, "trigger": event.id}, Severity.MEDIUM)
             return
         try:
             process = psutil.Process(pid)

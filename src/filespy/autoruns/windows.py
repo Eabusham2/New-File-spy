@@ -11,6 +11,7 @@ from typing import Any
 from filespy.autoruns import AutorunEntry
 from filespy.autoruns.cmdline import extract_target, normalise_service_path
 from filespy.context import Context
+from filespy.paths import basename, classify_location
 from filespy.registry import RegistryBackend, _lookup
 
 CV = r"Software\Microsoft\Windows\CurrentVersion"
@@ -60,6 +61,27 @@ SUBKEY_VALUES: tuple[tuple[str, str, str, str], ...] = (
 SERVICES = r"SYSTEM\CurrentControlSet\Services"
 TASK_TREE = NT + r"\Schedule\TaskCache\Tree"
 TASK_TASKS = NT + r"\Schedule\TaskCache\Tasks"
+
+
+PROFILE_LIST = NT + r"\ProfileList"
+_USER_SID = re.compile(r"^S-1-(?:5-21|12-1)-[\d-]+$")
+_STARTUP_TAIL = r"Microsoft\Windows\Start Menu\Programs\Startup"
+#: Values that hold several programs, and the separator between them.
+_LIST_VALUES = {"userinit": r"\s*,\s*", "shell": r"\s*,\s*", "taskman": r"\s*,\s*", "appinit_dlls": r"[\s,]+",
+                "bootexecute": r"\s*\|\s*"}
+_EXPECTED = frozenset({"explorer.exe", "userinit.exe", "autocheck"})
+
+
+def user_hives(registry: RegistryBackend) -> list[tuple[str, str, str]]:
+    """(hive, key prefix, label) for every user whose registry is loaded.
+
+    When FileSpy runs elevated under another account, HKCU is not the logged-on user's
+    hive, so per-user locations are read under HKEY_USERS for each real user instead.
+    """
+    sids = [sid for sid in (registry.subkeys("HKU", "") or []) if _USER_SID.match(sid)]
+    if not sids:
+        return [("HKCU", "", "HKCU")]
+    return [("HKU", sid + "\\", f"HKU\\{sid}") for sid in sids]
 
 
 def _text(data: Any) -> str:
@@ -167,22 +189,40 @@ class RegistryRunProvider:
 
     def __init__(self, registry: RegistryBackend) -> None:
         self.reg = registry
+        self._exists = os.path.isfile if os.name == "nt" else None
 
     def _target(self, command: str) -> str:
-        return extract_target(self.reg.expand(command))
+        return extract_target(self.reg.expand(command), exists=self._exists)
+
+    def _places(self, hive: str, key: str) -> list[tuple[str, str, str]]:
+        """(hive, key, label) to read for a catalog location; per-user ones fan out to every user."""
+        if hive != "HKCU":
+            return [(hive, key, f"{hive}\\{key}")]
+        return [(h, prefix + key, f"{label}\\{key}") for h, prefix, label in user_hives(self.reg)]
+
+    def _best_target(self, name: str, command: str) -> str:
+        """For values that list several programs, the one that does not belong there."""
+        separator = _LIST_VALUES.get(name.lower())
+        items = [i for i in re.split(separator, command) if i.strip()] if separator else [command]
+        targets = [t for t in (self._target(item) for item in items) if t]
+        for target in targets:
+            if classify_location(target, "win32") != "system" and basename(target).lower() not in _EXPECTED:
+                return target
+        return targets[0] if targets else ""
 
     def collect(self) -> list[AutorunEntry]:
         out: list[AutorunEntry] = []
         for hive, key in RUN_KEYS:
-            for name, data in (self.reg.values(hive, key) or {}).items():
-                command = _text(data)
-                if command:
-                    out.append(AutorunEntry("run_key", f"{hive}\\{key}", name or "(Default)", command, self._target(command)))
+            for real_hive, real_key, label in self._places(hive, key):
+                for name, data in (self.reg.values(real_hive, real_key) or {}).items():
+                    command = _text(data)
+                    if command:
+                        out.append(AutorunEntry("run_key", label, name or "(Default)", command, self._target(command)))
         for category, hive, key, name in NAMED_VALUES:
-            command = _text(self.reg.get(hive, key, name))
-            if command:
-                first = command.split(",")[0].split(" | ")[0]
-                out.append(AutorunEntry(category, f"{hive}\\{key}", name, command, self._target(first)))
+            for real_hive, real_key, label in self._places(hive, key):
+                command = _text(self.reg.get(real_hive, real_key, name))
+                if command:
+                    out.append(AutorunEntry(category, label, name, command, self._best_target(name, command)))
         for category, hive, key in VALUE_MAPS:
             for name, data in (self.reg.values(hive, key) or {}).items():
                 command = _text(data)
@@ -206,10 +246,14 @@ class RegistryDeepProvider:
         out: list[AutorunEntry] = []
         reg = self.reg
         for category, hive, parent, value in SUBKEY_VALUES:
-            for sub in (reg.subkeys(hive, parent) or [])[:5000]:
-                command = _text(reg.get(hive, f"{parent}\\{sub}", value))
-                if command:
-                    out.append(AutorunEntry(category, f"{hive}\\{parent}", sub, command, extract_target(reg.expand(command))))
+            places = [(hive, parent, f"{hive}\\{parent}")]
+            if hive == "HKCU":
+                places = [(h, prefix + parent, f"{label}\\{parent}") for h, prefix, label in user_hives(reg)]
+            for real_hive, real_parent, label in places:
+                for sub in (reg.subkeys(real_hive, real_parent) or [])[:5000]:
+                    command = _text(reg.get(real_hive, f"{real_parent}\\{sub}", value))
+                    if command:
+                        out.append(AutorunEntry(category, label, sub, command, extract_target(reg.expand(command))))
         if self.services:
             out.extend(self._services())
         if self.tasks:
@@ -288,10 +332,23 @@ class StartupFolderProvider:
         return out
 
 
-def startup_folders(env: dict[str, str] | None = None) -> list[str]:
+def startup_folders(env: dict[str, str] | None = None, registry: RegistryBackend | None = None) -> list[str]:
+    """Startup folders of this user, of all users, and of every user profile on the machine."""
     env = dict(os.environ) if env is None else env
-    tail = r"Microsoft\Windows\Start Menu\Programs\Startup"
-    return [os.path.join(env[var], tail) for var in ("APPDATA", "PROGRAMDATA") if env.get(var)]
+    folders = []
+    if env.get("APPDATA"):
+        folders.append(env["APPDATA"] + "\\" + _STARTUP_TAIL)
+    if env.get("PROGRAMDATA"):
+        folders.append(env["PROGRAMDATA"] + "\\" + _STARTUP_TAIL)
+    if registry is not None:
+        for sid in registry.subkeys("HKLM", PROFILE_LIST) or []:
+            if not _USER_SID.match(sid):
+                continue
+            profile = registry.get("HKLM", f"{PROFILE_LIST}\\{sid}", "ProfileImagePath")
+            if isinstance(profile, str) and profile:
+                folders.append(registry.expand(profile) + "\\AppData\\Roaming\\" + _STARTUP_TAIL)
+    seen: set[str] = set()
+    return [f for f in folders if not (f.lower() in seen or seen.add(f.lower()))]
 
 
 def providers(ctx: Context) -> list:
@@ -300,6 +357,6 @@ def providers(ctx: Context) -> list:
     cfg = ctx.config.autoruns
     return [
         RegistryRunProvider(ctx.registry),
-        StartupFolderProvider(startup_folders()),
+        StartupFolderProvider(startup_folders(registry=ctx.registry)),
         RegistryDeepProvider(ctx.registry, cfg.services, cfg.scheduled_tasks),
     ]

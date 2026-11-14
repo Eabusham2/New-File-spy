@@ -327,3 +327,83 @@ def test_report_how_stable_file_times_are_on_this_platform(tmp_path):
     distinct = sorted(set(seen), key=seen.index)
     if len(distinct) > 1:
         warnings.warn(f"file signature changed without the file being written: {distinct[:6]}", stacklevel=1)
+
+
+def test_program_written_into_a_file_that_started_empty_is_detected(make_ctx, tmp_path):
+    watched = tmp_path / "w"
+    watched.mkdir()
+    ctx = make_ctx(files__backend="polling")
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        target = watched / "payload"
+        target.write_bytes(b"")
+        assert wait_for(lambda: str(target) in monitor._recent, 10)  # examined while still empty
+        wait_for(monitor.idle)
+        assert not ctx.bus.find("file")
+        target.write_bytes(make_elf())
+        events = wait_for(lambda: [e for e in ctx.bus.find("file") if "payload" in e.subject], 15)
+        assert events, "content written after the first look was never examined"
+        assert events[0].action == "created" and events[0].details["kind"] == "elf"
+        assert wait_for(lambda: (r := ctx.state.lookup_drop(str(target))) and r.event_id)
+    finally:
+        monitor.stop()
+        monitor.join()
+
+
+def test_rewriting_one_document_is_not_a_burst_but_many_documents_are(make_ctx, tmp_path):
+    watched = tmp_path / "docs"
+    watched.mkdir()
+    ctx = make_ctx(files__burst_threshold=5, files__backend="polling")
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        for _ in range(60):
+            monitor._push("modified", str(watched / "big.pdf"), "")
+        time.sleep(0.8)
+        assert not ctx.bus.find("file", "burst")
+        for n in range(6):
+            monitor._push("modified", str(watched / f"report{n}.docx"), "")
+        assert wait_for(lambda: ctx.bus.find("file", "burst"), 10)
+        assert ctx.bus.find("file", "burst")[0].details["count"] >= 6
+    finally:
+        monitor.stop()
+        monitor.join()
+
+
+def test_renamed_away_file_leaves_no_record_behind(running):
+    ctx, monitor, watched = running
+    if monitor._observer is None:
+        pytest.skip("when polling, a rename is seen as a delete plus a create, and a deleted drop is kept on record")
+    first = watched / "a.tmp"
+    first.write_bytes(make_pe())
+    assert wait_for(lambda: ctx.state.lookup_drop(str(first)), 10)
+    wait_for(monitor.idle)
+    os.replace(first, watched / "b.txt")
+    assert wait_for(lambda: ctx.state.lookup_drop(str(first)) is None, 10), "a record for the old name lingered"
+
+
+def test_partial_polling_scan_is_announced(make_ctx, tmp_path, monkeypatch):
+    from filespy.monitors import files as files_module
+
+    watched = tmp_path / "many"
+    watched.mkdir()
+    for n in range(12):
+        (watched / f"f{n}.txt").write_text("x")
+    real = files_module.PollingScanner
+    monkeypatch.setattr(files_module, "PollingScanner", lambda roots, recursive, excluded: real(roots, recursive, excluded, max_entries=5))
+    ctx = make_ctx(files__backend="polling")
+    ctx.config.files.paths = [str(watched)]
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10)
+        warnings = [e for e in ctx.bus.find("system", "warning") if "only part" in e.title]
+        assert len(warnings) == 1
+    finally:
+        monitor.stop()
+        monitor.join()

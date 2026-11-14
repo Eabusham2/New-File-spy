@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from filespy import fileinfo, sanitize
 from filespy.analyzer import FileReport
-from filespy.events import Indicator
+from filespy.events import Indicator, Severity
 from filespy.monitors.base import Monitor
 from filespy.paths import basename, default_watch_roots, drop_nested, is_excluded, is_within
 
@@ -42,6 +42,7 @@ MAX_QUEUE = 100000
 MAX_DIR_WALK = 5000
 MAX_READ_RETRIES = 4
 RECHECK_COOLDOWN = 2.0  # seconds before an unchanged, already examined file is looked at again
+RELOOK_WINDOW = 120.0  # how long after its creation a so-far harmless file is re-examined when it changes
 
 
 def kind_label(report: FileReport) -> str:
@@ -187,6 +188,9 @@ class FileMonitor(Monitor):
         self._checked: dict[str, float] = {}
         self._retries: dict[str, int] = {}
         self._reported: dict[str, str] = {}  # path -> SHA-256 of the content last reported
+        self._born: dict[str, float] = {}  # path -> when it was first examined
+        self._relooks: dict[str, int] = {}  # path -> fruitless re-examinations so far (drives a back-off)
+        self._truncation_reported = False
         self.stats = {"events": 0, "examined": 0, "reported": 0}
         self._burst: deque[tuple[float, str, str]] = deque()
         self._burst_quiet_until = 0.0
@@ -206,6 +210,7 @@ class FileMonitor(Monitor):
         if polled:
             self._scanner = PollingScanner(polled, cfg.recursive, self._excluded)
             self._scanner.scan()
+            self._warn_if_truncated()
             self._next_scan = time.monotonic() + cfg.poll_interval
         mode = "real-time" if not polled else ("polling" if len(polled) == len(self.roots) else "real-time and polling")
         self.system("info", f"Watching {len(self.roots)} folder(s) for new files ({mode})")
@@ -239,16 +244,33 @@ class FileMonitor(Monitor):
         return failed
 
     def teardown(self) -> None:
-        waiting = len(self._pending) + len(self._inflight)
-        self.system("info", f"File monitor: {self.stats['events']} change events, {self.stats['examined']} files examined, "
-                            f"{self.stats['reported']} reported, {waiting} still waiting, {self._lost} skipped")
         if self._observer is not None:
             try:
                 self._observer.stop()
                 self._observer.join(3)
             except Exception:  # noqa: BLE001
                 log.debug("observer shutdown failed", exc_info=True)
-        self._pool.shutdown(wait=True, cancel_futures=True)
+        # Do not start queued examinations, and give running ones a bounded time to finish.
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        deadline = time.monotonic() + 5
+        while self._inflight and time.monotonic() < deadline:
+            time.sleep(0.05)
+        waiting = len(self._pending) + len(self._inflight)
+        self.system("info", f"File monitor: {self.stats['events']} change events, {self.stats['examined']} files examined, "
+                            f"{self.stats['reported']} reported, {waiting} still waiting, {self._lost} skipped")
+
+    def _warn_if_truncated(self) -> None:
+        if self._scanner is not None and self._scanner.truncated and not self._truncation_reported:
+            self._truncation_reported = True
+            self.system("warning", f"The watched folders hold more than {self._scanner.max_entries:,} files, so only part "
+                                   "of them is being watched. Watch fewer folders, or install watchdog for real-time watching.",
+                        Severity.LOW)
+
+    def _forget(self, path: str) -> None:
+        """Drop everything remembered about a path whose file is gone or has moved away."""
+        self.ctx.state.forget_drop(path)
+        for table in (self._recent, self._checked, self._reported, self._born, self._relooks, self._retries):
+            table.pop(path, None)
 
     # -- intake ---------------------------------------------------------------
     def _push(self, kind: str, path: str, dest: str) -> None:
@@ -277,6 +299,7 @@ class FileMonitor(Monitor):
             started = time.monotonic()
             for kind, path in self._scanner.scan():
                 self._handle(kind, path, "", now)
+            self._warn_if_truncated()
             spent = time.monotonic() - started
             self._next_scan = time.monotonic() + max(self.ctx.config.files.poll_interval, 3 * spent)
         self._settle(now)
@@ -289,6 +312,7 @@ class FileMonitor(Monitor):
         self.stats["events"] += 1
         if kind == "moved":
             self._pending.pop(path, None)
+            self._forget(path)  # nothing lives at the old name any more
             if dest and not self._excluded(dest):
                 if fileinfo.extension(path) != fileinfo.extension(dest):
                     self._burst.append((now, dest, fileinfo.extension(dest)))
@@ -314,8 +338,11 @@ class FileMonitor(Monitor):
             ext = fileinfo.extension(path)
             if ext in fileinfo.DECOY_EXTS:
                 self._burst.append((now, path, ext))
-            if ext in fileinfo.RISKY_EXTS or self.ctx.state.lookup_drop(path) is not None:
-                self._add_pending(path, "modified", now, not_before=self._checked.get(path, 0.0) + RECHECK_COOLDOWN)
+            # A file seen being created a moment ago may only now be getting its real content.
+            young = path in self._recent and now - self._born.get(path, 0.0) < RELOOK_WINDOW
+            if ext in fileinfo.RISKY_EXTS or young or self.ctx.state.lookup_drop(path) is not None:
+                backoff = RECHECK_COOLDOWN * 2 ** min(self._relooks.get(path, 0), 5)
+                self._add_pending(path, "modified", now, not_before=self._checked.get(path, 0.0) + backoff)
         elif kind == "deleted":
             self._on_deleted(path)
 
@@ -330,6 +357,8 @@ class FileMonitor(Monitor):
             return
         if len(self._pending) >= MAX_PENDING:
             self._lost += 1
+            if action != "modified":
+                self.ctx.state.forget_drop(path)  # it will never be examined, so do not keep a half-record
             return
         self._pending[path] = _Pending(action, now, now, renamed_from, _signature(path), not_before=not_before)
         if action != "modified" and self.ctx.state.lookup_drop(path) is None:
@@ -360,10 +389,8 @@ class FileMonitor(Monitor):
 
     def _on_deleted(self, path: str) -> None:
         pending = self._pending.pop(path, None)
-        self._recent.pop(path, None)
-        self._checked.pop(path, None)
-        self._retries.pop(path, None)
-        self._reported.pop(path, None)
+        for table in (self._recent, self._checked, self._retries, self._reported, self._born, self._relooks):
+            table.pop(path, None)
         name = sanitize.clean(basename(path), 120)
         if pending is not None and pending.action != "modified":
             self.ctx.state.forget_drop(path)
@@ -408,6 +435,7 @@ class FileMonitor(Monitor):
             del self._pending[path]
             if self._recent.get(path) == signature:
                 self._checked[path] = now  # unchanged since it was examined
+                self._relooks[path] = self._relooks.get(path, 0) + 1
                 continue
             self._remember(path, signature)
             self._inflight.add(path)
@@ -417,10 +445,11 @@ class FileMonitor(Monitor):
     def _remember(self, path: str, signature: tuple[int, int]) -> None:
         self._recent[path] = signature
         self._recent.move_to_end(path)
+        self._born.setdefault(path, time.monotonic())
         while len(self._recent) > 20000:
             old, _ = self._recent.popitem(last=False)
-            self._checked.pop(old, None)
-            self._reported.pop(old, None)
+            for table in (self._checked, self._reported, self._born, self._relooks):
+                table.pop(old, None)
 
     def _on_vanished(self, path: str, pending: _Pending) -> None:
         if pending.action == "modified":
@@ -434,13 +463,20 @@ class FileMonitor(Monitor):
 
     def _examine(self, path: str, pending: _Pending) -> None:
         """Runs on a worker thread."""
+        if self.stopping:
+            return
         try:
+            first_report = path not in self._reported
+            if pending.action == "modified" and first_report and self._head_is_boring(path):
+                self._relooks[path] = self._relooks.get(path, 0) + 1
+                return  # still nothing runnable in it
             report = self.ctx.analyzer.analyze(path)
             self.stats["examined"] += 1
             if not report.exists:
                 self._on_vanished(path, pending)
                 return
             if pending.action == "modified" and report.sha256 and self._reported.get(path) == report.sha256:
+                self._relooks[path] = self._relooks.get(path, 0) + 1
                 return  # only its metadata changed; the content is what was already reported
             if report.error:
                 # It exists but cannot be read right now: still locked by whatever wrote it, or by a scanner.
@@ -466,17 +502,21 @@ class FileMonitor(Monitor):
                 return
             name = sanitize.clean(basename(path), 120)
             label = kind_label(report)
-            if pending.action == "modified":
+            action = pending.action
+            if action == "modified" and first_report:
+                action = "created"  # it was created harmless a moment ago and only now received this content
+            if action == "modified":
                 title = f"A {label} was modified: {name}"
-            elif pending.action == "renamed":
+            elif action == "renamed":
                 title = f"New {label} (renamed into place): {name}"
             else:
                 title = f"New {label} dropped: {name}"
             details = report.to_details()
             if pending.renamed_from:
                 details["renamed_from"] = pending.renamed_from
-            event = self.emit("file", pending.action, title, path, report.indicators, details)
+            event = self.emit("file", action, title, path, report.indicators, details)
             self.stats["reported"] += 1
+            self._relooks.pop(path, None)
             if report.sha256:
                 self._reported[path] = report.sha256
             if report.interesting:
@@ -485,6 +525,17 @@ class FileMonitor(Monitor):
                 self.ctx.state.forget_drop(path)
         except Exception:  # noqa: BLE001 - never let one file stop the monitor
             log.exception("could not examine %r", path)
+
+    @staticmethod
+    def _head_is_boring(path: str) -> bool:
+        """Cheap look at the first bytes: True if the file is still empty or shapeless data."""
+        try:
+            with fileinfo.open_regular(path) as handle:
+                head = handle.read(4096)
+        except OSError:
+            return False
+        kind = fileinfo.detect_kind(head, basename(path))
+        return kind in ("empty", "data") and fileinfo.extension(path) not in fileinfo.RISKY_EXTS
 
     def idle(self) -> bool:
         """True when nothing is queued, waiting to settle or being examined (used by tests)."""
@@ -495,11 +546,12 @@ class FileMonitor(Monitor):
         cfg = self.ctx.config.files
         while self._burst and now - self._burst[0][0] > cfg.burst_window:
             self._burst.popleft()
-        if len(self._burst) < cfg.burst_threshold or now < self._burst_quiet_until:
+        latest = {path: ext for _when, path, ext in self._burst}  # one entry per file, however often it changed
+        if len(latest) < cfg.burst_threshold or now < self._burst_quiet_until:
             return
         self._burst_quiet_until = now + 60
-        paths = [item[1] for item in self._burst]
-        extensions = Counter(item[2] for item in self._burst)
+        paths = list(latest)
+        extensions = Counter(latest.values())
         top_ext, top_count = extensions.most_common(1)[0]
         indicators = [Indicator("file.mass_change", 60, f"{len(paths)} files were renamed or rewritten within {int(cfg.burst_window)} seconds", "T1486")]
         known = fileinfo.DECOY_EXTS | fileinfo.RISKY_EXTS | fileinfo.CONTAINER_EXTS | {"tmp", "bak", "part", "crdownload"}

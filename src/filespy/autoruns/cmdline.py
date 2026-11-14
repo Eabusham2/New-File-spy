@@ -8,14 +8,19 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Callable
 
 _EXT = r"(?:exe|dll|bat|cmd|com|scr|pif|cpl|sys|ocx|msi|vbs|vbe|js|jse|wsf|wsh|ps1|hta|lnk|jar|py)"
-_FIRST_PATH = re.compile(rf"(.+?\.{_EXT})(?=[\s,]|$)", re.IGNORECASE)
-_ARG = re.compile(r'"[^"]*"|\S+')
+_EXT_END = re.compile(rf"\.{_EXT}(?=[\s,]|$)", re.IGNORECASE)
+_HAS_EXT = re.compile(rf"\.{_EXT}$", re.IGNORECASE)
+_SCRIPT_LIKE = re.compile(rf"\.(?:{_EXT[3:-1]}|psm1|psd1|pl|rb|php|sh|class)$", re.IGNORECASE)
+_ARG = re.compile(r'(?:[^\s"]|"[^"]*")+')
+_INTERPRETERS_WIN = frozenset({"python", "pythonw", "py", "node", "perl", "ruby", "php"})
 HOSTS = frozenset({
     "rundll32", "regsvr32", "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "msiexec",
-    "conhost", "explorer", "forfiles",
-})
+    "conhost", "explorer", "forfiles", "java", "javaw",
+}) | _INTERPRETERS_WIN
+Exists = Callable[[str], bool]
 
 
 def _base(path: str) -> str:
@@ -24,11 +29,16 @@ def _base(path: str) -> str:
 
 
 def _args(text: str) -> list[str]:
-    return [a.strip('"') for a in _ARG.findall(text)]
+    return [a.replace('"', "") for a in _ARG.findall(text)]
 
 
-def split_first(command: str) -> tuple[str, str]:
-    """Split a Windows command line into (program, rest), coping with unquoted paths with spaces."""
+def split_first(command: str, exists: Exists | None = None) -> tuple[str, str]:
+    """Split a Windows command line into (program, rest).
+
+    An unquoted path may contain spaces. Windows tries each prefix that ends at a space
+    and runs the first one that exists; ``exists`` lets us do the same on a real system.
+    Without it, the shortest prefix that ends in a program extension is taken.
+    """
     text = command.strip()
     if text.startswith('"'):
         end = text.find('"', 1)
@@ -36,22 +46,34 @@ def split_first(command: str) -> tuple[str, str]:
             return text[1:end], text[end + 1:].strip()
         return text[1:], ""
     token, _, rest = text.partition(" ")
-    if _base(token) in HOSTS or re.search(rf"\.{_EXT}$", token, re.IGNORECASE) or "\\" not in text:
+    has_path = "\\" in token or re.match(r"^[A-Za-z]:", token) is not None
+    if not has_path or _base(token) in HOSTS:
         return token, rest.strip()
-    match = _FIRST_PATH.match(text)
-    if match:
-        return match.group(1), text[match.end():].strip()
+    candidates = [match.end() for match in _EXT_END.finditer(text)]
+    if exists is not None:
+        for end in candidates:
+            if exists(text[:end]):
+                return text[:end], text[end:].strip()
+    if _HAS_EXT.search(token):
+        return token, rest.strip()
+    if candidates:
+        first = text[:candidates[0]]
+        # A switch inside the supposed path means the program name really ended at the first space.
+        if not re.search(r"\s[-/]\w", first):
+            return first, text[candidates[0]:].strip()
     return token, rest.strip()
 
 
-def _payload(host: str, rest: str, depth: int) -> str:
+def _payload(host: str, rest: str, depth: int, exists: Exists | None) -> str:
     args = _args(rest)
     if host == "rundll32":
         text = rest.strip()
         if text.startswith('"'):
             end = text.find('"', 1)
             return text[1:end] if end > 0 else ""
-        return text.split(",", 1)[0].strip()
+        part = text.split(",", 1)[0].strip()
+        match = re.match(r"(.+?\.[A-Za-z0-9]{1,4})(?=\s|$)", part)  # "x.dll Run" is also accepted by rundll32
+        return match.group(1) if match else part
     if host == "regsvr32":
         plain = [a for a in args if not a.startswith(("/", "-"))]
         return plain[-1] if plain else ""
@@ -61,46 +83,69 @@ def _payload(host: str, rest: str, depth: int) -> str:
     if host in ("mshta", "explorer"):
         return args[0] if args else ""
     if host in ("powershell", "pwsh"):
-        for index, arg in enumerate(args[:-1]):
-            if arg.lower() in ("-file", "-f", "/file"):
+        for index, arg in enumerate(args):
+            if arg.lower() in ("-file", "-f", "/file") and index + 1 < len(args):
                 return args[index + 1]
+            joined = re.match(r"^[-/]f(?:ile)?[=:](.+)$", arg, re.IGNORECASE)
+            if joined:
+                return joined.group(1)
+        for index, arg in enumerate(args):
+            if arg.lower() in ("-command", "-c", "/command") and index + 1 < len(args):
+                inner = " ".join(args[index + 1:]).lstrip("&. ").strip("'\" ")
+                first = inner.split()[0].strip("'\"") if inner else ""
+                return first if _SCRIPT_LIKE.search(first) or "\\" in first else ""
+        for arg in args:
+            if not arg.startswith(("-", "/")) and (_SCRIPT_LIKE.search(arg) or "\\" in arg):
+                return arg
         return ""
     if host == "msiexec":
         for index, arg in enumerate(args):
             low = arg.lower()
             if low in ("/i", "/package", "-i", "/a") and index + 1 < len(args):
                 return args[index + 1]
-            if low.startswith("/i") and len(arg) > 2:
+            if low.startswith(("/i", "-i")) and len(arg) > 2:
                 return arg[2:]
         return ""
+    if host in ("java", "javaw"):
+        for index, arg in enumerate(args[:-1]):
+            if arg.lower() == "-jar":
+                return args[index + 1]
+        return ""
+    if host in _INTERPRETERS_WIN:
+        for arg in args:
+            if arg in ("-c", "-e", "-m", "-r"):
+                return ""  # inline code or a module, not a file
+            if not arg.startswith("-"):
+                return arg
+        return ""
     if host == "cmd":
-        match = re.search(r"(?:^|\s)/[ck]\s+(.*)$", rest, re.IGNORECASE | re.DOTALL)
+        match = re.search(r'(?:^|\s)/[ck](?=\s|"|$)\s*(.*)$', rest, re.IGNORECASE | re.DOTALL)
         if not match:
             return ""
         inner = match.group(1).strip()
-        if inner.startswith('"') and inner.endswith('"') and inner.count('"') == 2:
-            inner = inner[1:-1]
+        if len(inner) >= 2 and inner.startswith('"') and inner.endswith('"'):
+            inner = inner[1:-1]  # cmd itself drops the first and the last quote
         start = re.match(r'start\s+(?:"[^"]*"\s+)?(?:/\w+\s+)*', inner, re.IGNORECASE)
         if start:
             inner = inner[start.end():]
-        return extract_target(inner, depth + 1)
+        return extract_target(inner, depth + 1, exists)
     if host == "conhost":
         remaining = [a for a in args if not a.startswith("--")]
-        return extract_target(" ".join(remaining), depth + 1) if remaining else ""
+        return extract_target(" ".join(remaining), depth + 1, exists) if remaining else ""
     if host == "forfiles":
         match = re.search(r'/c\s+"?(.*?)"?\s*$', rest, re.IGNORECASE)
-        return extract_target(match.group(1), depth + 1) if match else ""
+        return extract_target(match.group(1), depth + 1, exists) if match else ""
     return ""
 
 
-def extract_target(command: str, depth: int = 0) -> str:
+def extract_target(command: str, depth: int = 0, exists: Exists | None = None) -> str:
     """Path of the program, library or script a Windows command line launches ("" if empty)."""
     if not command or not command.strip() or depth > 4:
         return ""
-    first, rest = split_first(command)
+    first, rest = split_first(command, exists)
     host = _base(first)
     if host in HOSTS:
-        return _payload(host, rest, depth) or first
+        return _payload(host, rest, depth, exists) or first
     return first
 
 

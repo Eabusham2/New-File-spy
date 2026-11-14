@@ -171,7 +171,7 @@ class FakeRegistry:
 
     def subkeys(self, hive: str, key: str) -> list[str] | None:
         ident = self._id(hive, key)
-        if ident not in self._keys:
+        if ident not in self._keys and not (ident[1] == "" and any(other[0] == hive for other in self._keys)):
             return None
         prefix = ident[1] + "\\" if ident[1] else ""
         return sorted(

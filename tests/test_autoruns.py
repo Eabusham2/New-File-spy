@@ -49,6 +49,18 @@ WINDOWS_TARGETS = [
     ("explorer.exe", "explorer.exe"),
     ("", ""),
     ('"unterminated', "unterminated"),
+    # shapes found in review: each used to resolve to the wrong file
+    (r'cmd.exe /c ""C:\Program Files\x\run.bat" arg"', r"C:\Program Files\x\run.bat"),
+    (r'cmd.exe /c"C:\x\a.bat"', r"C:\x\a.bat"),
+    (r"python C:\scripts\x.py", r"C:\scripts\x.py"),
+    (r"java -jar C:\app\x.jar", r"C:\app\x.jar"),
+    (r"C:\Users\Public\svc -k C:\Windows\x.dll", r"C:\Users\Public\svc"),
+    (r"rundll32.exe C:\Users\x\e.dll Run", r"C:\Users\x\e.dll"),
+    (r"powershell -NoP -W Hidden C:\Users\Public\a.ps1", r"C:\Users\Public\a.ps1"),
+    (r'powershell -Command "& C:\Users\Public\a.ps1"', r"C:\Users\Public\a.ps1"),
+    (r"powershell.exe -ep bypass -file=C:\x.ps1", r"C:\x.ps1"),
+    (r'msiexec.exe /i"C:\a b\x.msi" /qn', r"C:\a b\x.msi"),
+    (r'python -c "import os"', "python"),
 ]
 
 
@@ -65,6 +77,15 @@ def test_windows_target_extraction(command, expected):
 )
 def test_posix_target_extraction(command, expected):
     assert extract_posix_target(command) == expected
+
+
+def test_unquoted_path_is_resolved_like_windows_does_when_files_can_be_checked():
+    command = r"C:\Users\a\My.com Files\x.exe /s"
+    assert extract_target(command) == r"C:\Users\a\My.com"  # no way to know without the file system
+    real = {r"C:\Users\a\My.com Files\x.exe"}
+    assert extract_target(command, exists=real.__contains__) == r"C:\Users\a\My.com Files\x.exe"
+    planted = {r"C:\Program.exe", r"C:\Program Files\App\app.exe"}
+    assert extract_target(r"C:\Program Files\App\app.exe -x", exists=planted.__contains__) == r"C:\Program Files\App\app.exe"
 
 
 def test_service_paths_and_env_expansion():
@@ -121,6 +142,40 @@ def test_windows_providers_read_every_location():
     assert RegistryDeepProvider(reg, services=False, tasks=False).collect() == []
 
 
+def test_every_users_hive_is_read_when_running_as_another_account():
+    from filespy.autoruns.windows import startup_folders, user_hives
+
+    reg = FakeRegistry()
+    assert user_hives(reg) == [("HKCU", "", "HKCU")]  # nothing loaded under HKEY_USERS: fall back
+    alice, bob = "S-1-5-21-1111-2222-3333-1001", "S-1-5-21-1111-2222-3333-1002"
+    reg.set("HKU", alice + "\\" + RUN, "Updater", r"C:\Users\alice\AppData\Roaming\u.exe")
+    reg.set("HKU", bob + "\\" + RUN, "Chat", r"C:\Program Files\Chat\chat.exe")
+    reg.set("HKU", ".DEFAULT\\" + RUN, "Ignored", "x.exe")
+    reg.set("HKU", alice + "_Classes\\x", "y", "z")
+    reg.set("HKCU", RUN, "OnlyMine", "mine.exe")
+    entries = {(e.location, e.name) for e in RegistryRunProvider(reg).collect()}
+    assert (f"HKU\\{alice}\\{RUN}", "Updater") in entries and (f"HKU\\{bob}\\{RUN}", "Chat") in entries
+    assert not any(name in ("Ignored", "OnlyMine") for _loc, name in entries)
+    profiles = NT + r"\ProfileList"
+    reg.set("HKLM", f"{profiles}\\{alice}", "ProfileImagePath", r"C:\Users\alice")
+    reg.set("HKLM", f"{profiles}\\S-1-5-18", "ProfileImagePath", r"%SystemRoot%\system32\config\systemprofile")
+    folders = startup_folders({"APPDATA": r"C:\Users\admin\AppData\Roaming"}, reg)
+    assert len(folders) == 2 and folders[1].startswith(r"C:\Users\alice\AppData\Roaming")
+
+
+def test_appended_hijack_in_a_list_value_is_the_target():
+    reg = FakeRegistry()
+    key = NT + r"\Winlogon"
+    reg.set("HKLM", key, "Userinit", r"C:\Windows\system32\userinit.exe,C:\Users\Public\evil.exe")
+    reg.set("HKLM", key, "Shell", "explorer.exe")
+    reg.set("HKLM", r"SYSTEM\CurrentControlSet\Control\Session Manager", "BootExecute",
+            ["autocheck autochk *", r"C:\ProgramData\boot.exe /q"])
+    found = {e.name: e.target for e in RegistryRunProvider(reg).collect()}
+    assert found["Userinit"] == r"C:\Users\Public\evil.exe"
+    assert found["Shell"] == "explorer.exe"
+    assert found["BootExecute"] == r"C:\ProgramData\boot.exe"
+
+
 def test_startup_folder_provider_resolves_shortcuts(tmp_path):
     (tmp_path / "desktop.ini").write_text("x")
     (tmp_path / "updater.lnk").write_bytes(make_lnk(r"C:\Users\b\AppData\Roaming\u.exe", "/s"))
@@ -135,7 +190,7 @@ def test_startup_folder_provider_resolves_shortcuts(tmp_path):
 def windows_monitor(make_ctx, monkeypatch):
     ctx = make_ctx(platform="win32", autoruns__interval=0.5)
     ctx.registry = fake_windows_registry()
-    monkeypatch.setattr("filespy.autoruns.windows.startup_folders", lambda env=None: [])
+    monkeypatch.setattr("filespy.autoruns.windows.startup_folders", lambda env=None, registry=None: [])
     monkeypatch.setattr("filespy.monitors.autoruns.SLOW_EVERY", 1)
     monitor = AutorunMonitor(ctx)
     monitor.interval = 0.05

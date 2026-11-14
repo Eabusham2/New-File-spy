@@ -5,9 +5,9 @@ import sys
 import pytest
 
 from filespy import snapshot
-from filespy.events import Indicator, make_event
-from filespy.quarantine import Quarantine, QuarantineError
-from filespy.response import Responder
+from filespy.events import Indicator, Severity, make_event
+from filespy.quarantine import Quarantine, QuarantineError, link_in_path, remove_exact
+from filespy.response import Responder, is_protected
 from filespy.testing import make_pe, test_threat_bytes, wait_for
 
 
@@ -59,6 +59,70 @@ def test_quarantine_refuses_unsafe_requests(tmp_path):
             q.delete(bad)
     kept = q.add(str(victim))
     assert q.delete(kept.id).id == kept.id and q.list() == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses POSIX symbolic links")
+def test_delete_cannot_be_redirected_by_swapping_the_folder(tmp_path):
+    """Between copying a file and deleting it, its folder is replaced by a link to someone else's folder."""
+    attacker = tmp_path / "public"
+    attacker.mkdir()
+    (attacker / "target.dll").write_bytes(b"flagged")
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    (protected / "target.dll").write_bytes(b"precious")
+    copied = os.stat(attacker / "target.dll")
+    attacker.rename(tmp_path / "public.moved")
+    (tmp_path / "public").symlink_to(protected, target_is_directory=True)
+    assert remove_exact(str(tmp_path / "public" / "target.dll"), copied) is False
+    assert (protected / "target.dll").read_bytes() == b"precious"
+    assert remove_exact(str(tmp_path / "public.moved" / "target.dll"), copied) is True
+    assert not (tmp_path / "public.moved" / "target.dll").exists()
+    assert remove_exact(str(tmp_path / "nowhere" / "x"), copied) is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses POSIX symbolic links")
+def test_restore_refuses_a_folder_that_became_a_link(tmp_path):
+    q = Quarantine(tmp_path / "data")
+    origin = tmp_path / "downloads"
+    origin.mkdir()
+    (origin / "evil.exe").write_bytes(b"payload")
+    record = q.add(str(origin / "evil.exe"))
+    startup = tmp_path / "startup"
+    startup.mkdir()
+    origin.rmdir()
+    origin.symlink_to(startup, target_is_directory=True)
+    assert link_in_path(str(origin)) and not link_in_path(str(startup))
+    with pytest.raises(QuarantineError, match="link"):
+        q.restore(record.id)
+    assert list(startup.iterdir()) == [] and len(q.list()) == 1
+    safe = q.restore(record.id, str(tmp_path / "inspect" / "evil.bin"))
+    assert safe.read_bytes() == b"payload"
+
+
+def test_protected_processes_are_judged_by_name_and_place():
+    assert is_protected("svchost.exe", r"C:\Windows\System32\svchost.exe", "win32")
+    assert is_protected("explorer.exe", r"C:\Windows\explorer.exe", "win32")
+    assert is_protected("lsass.exe", "", "win32")  # protected processes hide their path
+    assert is_protected("MsMpEng.exe", r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\MsMpEng.exe", "win32")
+    assert not is_protected("svchost.exe", r"C:\Users\bob\AppData\Local\Temp\svchost.exe", "win32")
+    assert not is_protected("notepad.exe", r"C:\Windows\System32\notepad.exe", "win32")
+    assert is_protected("systemd", "/usr/lib/systemd/systemd", "linux") and not is_protected("sshd", "/tmp/sshd", "linux")
+
+
+def test_responder_is_honest_when_the_file_or_process_cannot_be_dealt_with(make_ctx, tmp_path, monkeypatch):
+    ctx = make_ctx(response__quarantine_min_severity="high", response__kill_min_severity="high")
+    responder = Responder(ctx)
+    busy = tmp_path / "running.exe"
+    busy.write_bytes(make_pe())
+    ctx.state.note_drop(str(busy), "x", "ev", 50)
+    monkeypatch.setattr("filespy.quarantine.remove_exact", lambda path, opened: False)  # e.g. the program is running
+    hot = [Indicator("x", 80, "r")]
+    responder.handle(make_event("file", "created", "busy", str(busy), hot, {"path": str(busy)}))
+    said = ctx.bus.find("system", "response")[-1]
+    assert "Could not remove" in said.title and said.severity is Severity.HIGH
+    assert busy.exists() and Quarantine(ctx.data_dir).list() == [] and ctx.state.lookup_drop(str(busy)) is not None
+    responder.handle(make_event("process", "started", "unknown start", "x", hot, {"pid": 999999, "name": "x.exe"}))
+    assert "start time is unknown" in ctx.bus.find("system", "response")[-1].title
 
 
 def test_responder_is_off_by_default_and_quarantines_when_enabled(make_ctx, tmp_path):

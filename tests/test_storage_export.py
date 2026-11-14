@@ -93,3 +93,17 @@ def test_export_settings_filter_and_auto_export(tmp_path):
     written = auto_export(events, cfg, tmp_path, "abcdef123456")
     assert sorted(p.suffix for p in written) == [".csv", ".json"]
     assert "settings" not in json.loads(written[0].read_text(encoding="utf-8"))["meta"]
+
+
+def test_export_is_not_redirected_by_a_planted_link_and_leaves_no_temporary_files(tmp_path):
+    import sys
+
+    folder = tmp_path / "shared"
+    folder.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    if sys.platform != "win32":
+        (folder / "report.html.part").symlink_to(victim)  # the old, predictable temporary name
+    written = export_events(sample_events(), "html", folder / "report.html", Config())
+    assert written.read_text(encoding="utf-8").startswith("<!doctype html>") and victim.read_text() == "keep me"
+    assert sorted(p.name for p in folder.iterdir() if not p.is_symlink()) == ["report.html"]
