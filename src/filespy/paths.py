@@ -10,6 +10,7 @@ import os
 import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
@@ -82,6 +83,66 @@ def default_watch_roots(
             for name in ("Downloads", "Desktop", ".config/autostart", ".config/systemd/user", ".local/bin")
         ]
         roots += ["/etc/cron.d", "/etc/systemd/system"]
+    seen: set[str] = set()
+    unique = []
+    for root in roots:
+        key = _slashed(root).rstrip("/")
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return unique
+
+
+_PROFILE_VARIABLES = ("USERPROFILE", "TEMP", "APPDATA", "LOCALAPPDATA")
+
+
+def signed_in_users(
+    platform: str = sys.platform, processes: Iterable[Any] | None = None, me: str | None = None
+) -> list[tuple[str, dict[str, str]]]:
+    """Windows: other people signed in at this computer, with where their folders are.
+
+    When a standard user approves the administrator prompt with an administrator's password,
+    FileSpy runs as that administrator, so its own TEMP, APPDATA and Downloads are the
+    administrator's, not the signed-in person's. Each signed-in person's desktop (Explorer)
+    runs as them, and its environment says where their folders are. Returns (account, folders)
+    pairs; an empty list elsewhere, when nobody else is signed in, or when it cannot be read.
+    """
+    if platform != "win32":
+        return []
+    try:
+        if me is None or processes is None:
+            import psutil
+
+            me = psutil.Process().username() if me is None else me
+            processes = psutil.process_iter(["name", "username"]) if processes is None else processes
+        found: dict[str, tuple[str, dict[str, str]]] = {}
+        for proc in processes:
+            info = getattr(proc, "info", None) or {}
+            user = str(info.get("username") or "")
+            if str(info.get("name") or "").lower() != "explorer.exe" or not user:
+                continue
+            if user.lower() == str(me).lower() or user.lower() in found:
+                continue
+            try:
+                environment = {str(k).upper(): str(v) for k, v in proc.environ().items()}
+            except Exception:  # noqa: BLE001 - access denied, or the process just ended
+                continue
+            folders = {name: environment[name] for name in _PROFILE_VARIABLES if environment.get(name)}
+            if folders.get("USERPROFILE"):
+                found[user.lower()] = (user, folders)
+        return list(found.values())
+    except Exception:  # noqa: BLE001 - never keep FileSpy from starting over this
+        return []
+
+
+def all_default_roots(
+    platform: str = sys.platform, users: list[tuple[str, dict[str, str]]] | None = None
+) -> list[str]:
+    """The default folders, plus the same folders of the other people signed in (see signed_in_users)."""
+    roots = default_watch_roots(platform)
+    system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or r"C:\Windows"
+    for _account, folders in signed_in_users(platform) if users is None else users:
+        roots += default_watch_roots(platform, env={"SystemRoot": system_root, **folders}, home=folders["USERPROFILE"])
     seen: set[str] = set()
     unique = []
     for root in roots:

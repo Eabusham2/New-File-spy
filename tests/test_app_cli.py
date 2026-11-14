@@ -25,10 +25,20 @@ def quiet_config(watched):
 
 
 def system_binary():
-    """A small real program that keeps running for a while, plus its arguments."""
+    """A small real program that keeps running for a while, plus its arguments.
+
+    The test runs a copy of it under another name, so it must be a program that does not
+    decide what to do by the name it was started with. On newer Linux systems (Ubuntu 25.10
+    and later) sleep is part of one multi-call program that does, and a copy called "updater"
+    just exits, so a shell is copied there instead: it starts sleep as a child and waits.
+    """
     if sys.platform == "win32":
         root = os.environ.get("SystemRoot", r"C:\Windows")
         return os.path.join(root, "System32", "ping.exe"), ["-n", "30", "127.0.0.1"]
+    if sys.platform.startswith("linux"):
+        for shell in ("/bin/bash", "/usr/bin/bash"):
+            if os.path.exists(shell):
+                return shell, ["-c", "sleep 30; exit 0"]
     for candidate in ("/bin/sleep", "/usr/bin/sleep"):
         if os.path.exists(candidate):
             return candidate, ["30"]
@@ -134,6 +144,10 @@ def test_cli_scan_config_quarantine_and_events(tmp_path, capsys):
     assert run(capsys, "--data-dir", home, "config", "set", "export.formats", "csv,zip")[0] == 0
     assert json.loads(run(capsys, "--data-dir", home, "config", "get", "export.formats")[1]) == ["csv", "zip"]
     assert run(capsys, "--data-dir", home, "config", "set", "alerts.webhook_url", "https://h.example/secret")[0] == 0
+    # Secrets are not printed back unless asked for.
+    assert "secret" not in run(capsys, "--data-dir", home, "config", "get", "alerts.webhook_url")[1]
+    assert "secret" not in run(capsys, "--data-dir", home, "config", "keys")[1]
+    assert "h.example/secret" in run(capsys, "--data-dir", home, "config", "get", "alerts.webhook_url", "--secrets")[1]
     backup = str(tmp_path / "settings.json")
     assert run(capsys, "--data-dir", home, "config", "export", backup)[0] == 0
     assert "secret" not in open(backup, encoding="utf-8").read()

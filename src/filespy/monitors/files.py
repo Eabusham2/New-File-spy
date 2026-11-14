@@ -23,7 +23,15 @@ from filespy import fileinfo, sanitize
 from filespy.analyzer import FileReport
 from filespy.events import Indicator, Severity
 from filespy.monitors.base import Monitor
-from filespy.paths import basename, default_watch_roots, drop_nested, is_excluded, is_within, own_folders
+from filespy.paths import (
+    all_default_roots,
+    basename,
+    drop_nested,
+    is_excluded,
+    is_within,
+    own_folders,
+    signed_in_users,
+)
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -233,8 +241,11 @@ class FileMonitor(Monitor):
     def resolve_roots(self) -> list[str]:
         cfg = self.ctx.config.files
         candidates = list(cfg.paths)
+        self.desktop_users: list[str] = []  # other people signed in, whose folders are watched too
         if cfg.use_default_paths:
-            candidates += default_watch_roots(self.ctx.platform)
+            users = signed_in_users(self.ctx.platform)
+            self.desktop_users = [account for account, _folders in users]
+            candidates += all_default_roots(self.ctx.platform, users)
         existing = [os.path.abspath(os.path.expanduser(p)) for p in candidates]
         existing = [p for p in existing if os.path.isdir(p) and not is_within(p, str(self.ctx.data_dir))]
         return drop_nested(existing)
@@ -276,6 +287,9 @@ class FileMonitor(Monitor):
             self._next_scan = time.monotonic() + cfg.poll_interval
         mode = "real-time" if not polled else ("polling" if len(polled) == len(self.roots) else "real-time and polling")
         self.system("info", f"Watching {len(self.roots)} folder(s) for new files ({mode})")
+        if self.desktop_users:
+            names = ", ".join(sanitize.clean(account, 80) for account in self.desktop_users)
+            self.system("info", f"Also watching the folders of {names}, signed in at this computer")
 
     def _start_watchdog(self, recursive: bool) -> list[str]:
         """Watch every root we can in real time; return the roots that must be polled instead."""

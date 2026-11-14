@@ -32,7 +32,9 @@ self-contained HTML report, or a ZIP of all of them.
 [Releases page](https://github.com/Eabusham2/New-File-spy/releases) and double-click it.
 It asks for administrator rights when it starts, so that it can see every user's programs
 and the system locations malware uses; say yes to the Windows prompt (if you say no, it
-does not open). Then press
+does not open). On a standard account, where the prompt asks for an administrator's password,
+FileSpy runs as that administrator but still watches the Downloads, Desktop, Temp and AppData
+folders of everyone signed in, so your own folders are covered. Then press
 **Start watching**, and run or open whatever you want to observe. `filespy-cli.exe` on the
 same page is the command line. It runs with your normal rights unless you start it from an
 administrator terminal.
@@ -202,7 +204,9 @@ Every file in the window, and any file given to `filespy vt`, can be checked on
 
 - **Look up** opens the file's VirusTotal page in your browser. Only the file's SHA-256
   fingerprint is used, so nothing about the file leaves your computer. If VirusTotal has
-  seen the file before, the page shows what the engines said.
+  seen the file before, the page shows what the engines said. The fingerprint is taken from
+  the file as it is now, so a file rewritten after it was listed is looked up as it is
+  today; for a file that is gone, the fingerprint FileSpy recorded is used.
 - **Upload** sends the whole file, after you confirm. With an API key in Settings, FileSpy
   uploads it and opens the analysis page when it is done. Without a key, it opens
   VirusTotal's upload page and shows the file selected in a folder window, ready to drag
@@ -211,6 +215,16 @@ Every file in the window, and any file given to `filespy vt`, can be checked on
 VirusTotal shares uploaded files with security companies and others can find them, so never
 upload personal or confidential documents. Upload a file only when its hash is unknown and
 you want a verdict.
+
+To add the API key without the window, type it at a prompt that does not show it, so it
+stays out of the screen and your shell history:
+
+```
+filespy config set detection.virustotal_api_key -
+```
+
+`filespy config keys`, `get` and `set` show the API key and webhook address as `<redacted>`;
+add `--secrets` to see them.
 
 ## Automatic responses (off by default)
 

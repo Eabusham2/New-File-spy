@@ -16,10 +16,10 @@ from typing import Any
 
 from filespy import __version__, sanitize
 from filespy.alerts import format_event
-from filespy.config import Config, config_path, load_config, save_config
+from filespy.config import SECRET_KEYS, Config, config_path, load_config, save_config
 from filespy.events import Event, Severity, severity_for, summarize
+from filespy.paths import all_default_roots, ensure_private_dir
 from filespy.paths import data_dir as default_data_dir
-from filespy.paths import default_watch_roots, ensure_private_dir
 
 SEVERITIES = [s.label for s in Severity]
 
@@ -393,19 +393,33 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
 def cmd_config(args: argparse.Namespace) -> int:
     _home, cfg, cfg_file = _setup(args)
     action = args.action
+
+    def shown(key: str) -> str:
+        """A setting's value as printed: the webhook address and API key stay hidden unless --secrets is given."""
+        value = cfg.get(key)
+        if key in SECRET_KEYS and value and not args.secrets:
+            value = "<redacted>"
+        return json.dumps(value)
+
     if action == "path":
         _out(str(cfg_file))
     elif action == "show":
         _out(json.dumps(cfg.to_dict(redact=not args.secrets), indent=2))
     elif action == "keys":
         for key in cfg.keys():
-            _out(f"{key} = {json.dumps(cfg.get(key))}")
+            _out(f"{key} = {shown(key)}")
     elif action == "get":
-        _out(json.dumps(cfg.get(args.key)))
+        _out(shown(args.key))
     elif action == "set":
-        cfg.set(args.key, args.value)
+        value = args.value
+        if value == "-":
+            # Typed at a prompt that does not show it, so it stays out of the screen and the shell history.
+            import getpass
+
+            value = getpass.getpass(f"{args.key}: ")
+        cfg.set(args.key, value)
         save_config(cfg, cfg_file)
-        _out(f"{args.key} = {json.dumps(cfg.get(args.key))}")
+        _out(f"{args.key} = {shown(args.key)}")
     elif action == "export":
         save_config(cfg, args.file, redact=not args.secrets)
         _out(f"Settings written to {args.file}")
@@ -459,7 +473,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     line(not cfg.warnings, f"configuration: {cfg_file}" + ("" if not cfg.warnings else f" ({len(cfg.warnings)} warning(s))"))
     for warning in cfg.warnings:
         _out(f"       {warning}")
-    roots = list(cfg.files.paths) + (default_watch_roots() if cfg.files.use_default_paths else [])
+    roots = list(cfg.files.paths) + (all_default_roots() if cfg.files.use_default_paths else [])
     present = [r for r in roots if os.path.isdir(os.path.expanduser(r))]
     line(bool(present), f"{len(present)} of {len(roots)} folders to watch exist")
     if os.name == "nt":
@@ -529,9 +543,15 @@ def cmd_vt(args: argparse.Namespace) -> int:
         return 0
     key = virustotal.api_key(cfg)
     if not key:
-        _out("No VirusTotal API key is set, so the upload page will open and the file will be shown in a folder window;")
-        _out("drag the file onto the page. To upload from FileSpy, add a key with:")
-        _out("  filespy config set detection.virustotal_api_key YOUR-KEY")
+        if args.no_browser:
+            _out("No VirusTotal API key is set. Upload the file on VirusTotal's upload page:")
+            _out(f"  page: {virustotal.upload_page_url()}")
+            _out(f"  file: {sanitize.clean(path, 300)}")
+        else:
+            _out("No VirusTotal API key is set, so the upload page will open and the file will be shown in a folder window;")
+            _out("drag the file onto the page.")
+        _out("To upload from FileSpy itself, add your key under Settings in the window, or type it here (it is not shown):")
+        _out("  filespy config set detection.virustotal_api_key -")
         if not args.no_browser:
             virustotal.open_url(virustotal.upload_page_url())
             virustotal.reveal(path)

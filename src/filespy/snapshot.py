@@ -16,7 +16,7 @@ from typing import Any
 from filespy import __version__, sanitize
 from filespy.autoruns import get_providers as autorun_providers
 from filespy.context import Context
-from filespy.paths import default_watch_roots, drop_nested, is_excluded, is_within
+from filespy.paths import all_default_roots, drop_nested, is_excluded, is_within
 from filespy.settingsmon import get_providers as settings_providers
 
 try:
@@ -36,7 +36,7 @@ def _strip_text(value: Any) -> Any:
 
 def _files(ctx: Context, limit: int) -> tuple[dict[str, list[int]], bool]:
     cfg = ctx.config.files
-    roots = list(cfg.paths) + (default_watch_roots(ctx.platform) if cfg.use_default_paths else [])
+    roots = list(cfg.paths) + (all_default_roots(ctx.platform) if cfg.use_default_paths else [])
     roots = drop_nested([os.path.abspath(os.path.expanduser(r)) for r in roots if os.path.isdir(os.path.expanduser(r))])
     out: dict[str, list[int]] = {}
     stack = [r for r in roots if not is_within(r, str(ctx.data_dir))]

@@ -150,6 +150,7 @@ class FileEntry:
     kind: str = ""
     size: Any = None
     history: list[str] = field(default_factory=list)
+    renamed_from: str = ""  # its earlier name, when it was renamed during the session
 
     @property
     def name(self) -> str:
@@ -197,6 +198,12 @@ class FileList:
             return None
         key = self.key(path)
         entry = self.items.pop(key, None)
+        earlier = str(details.get("renamed_from") or "") if event.action == "renamed" else ""
+        if entry is None and earlier:
+            # The same file under its earlier name: move it, so no row is left for a name that is gone.
+            entry = self.items.pop(self.key(earlier), None)
+            if entry is not None:
+                entry.path, entry.renamed_from = path, earlier
         status = FILE_STATUS[event.action]
         if entry is None:
             entry = FileEntry(path=path, status=status, event=event, severity=event.severity, ts=event.ts)
@@ -370,6 +377,26 @@ def open_folder(folder: str) -> bool:
         return False
 
 
+def current_sha256(path: str, recorded: str = "") -> str:
+    """The file's SHA-256 as it is on disk now; the recorded one if the file can no longer be read."""
+    try:
+        return virustotal.sha256_of(path)
+    except OSError:
+        if recorded:
+            return recorded
+        raise
+
+
+def windowed_python(executable: str = sys.executable) -> str:
+    """pythonw.exe next to python.exe: it runs the window without leaving an empty console window open."""
+    folder, name = os.path.split(executable)
+    if name.lower() == "python.exe":
+        candidate = os.path.join(folder, "pythonw.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return executable
+
+
 def relaunch_as_admin(arguments: list[str] | None = None) -> bool:
     """Windows: start another copy elevated (the user sees the usual consent prompt)."""
     if os.name != "nt":
@@ -381,8 +408,12 @@ def relaunch_as_admin(arguments: list[str] | None = None) -> bool:
         if getattr(sys, "frozen", False):
             program, parameters = sys.executable, forwarded
         else:
-            program, parameters = sys.executable, ["-m", "filespy.gui", *forwarded]
-        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", program, subprocess.list2cmdline(parameters), None, 1)  # type: ignore[attr-defined]
+            program, parameters = windowed_python(), ["-m", "filespy.gui", *forwarded]
+        try:
+            folder: str | None = os.getcwd()  # so "-m filespy.gui" is found the same way as now
+        except OSError:
+            folder = None
+        result = ctypes.windll.shell32.ShellExecuteW(None, "runas", program, subprocess.list2cmdline(parameters), folder, 1)  # type: ignore[attr-defined]
         return int(result) > 32
     except Exception:  # noqa: BLE001
         return False
@@ -854,6 +885,13 @@ class MainWindow:
         if old is not None:
             self.files_tree.delete(old)
             self.item_files.pop(old, None)
+        if entry.renamed_from:
+            # Its row under the earlier name, unless a new file has taken that name since.
+            moved = self.file_items.get(FileList.key(entry.renamed_from))
+            if moved is not None and self.item_files.get(moved) is entry:
+                del self.file_items[FileList.key(entry.renamed_from)]
+                self.files_tree.delete(moved)
+                self.item_files.pop(moved, None)
         needle = self.find.get().strip().lower()
         if needle and needle not in f"{entry.path} {entry.status} {entry.kind} {entry.sha256}".lower():
             return
@@ -927,15 +965,18 @@ class MainWindow:
         from tkinter import messagebox
 
         path, digest = self._selected_path(), self._selected_sha256()
+        if path and os.path.isfile(path):
+            # Hash the file as it is now: it may have been rewritten since FileSpy listed it.
+            self.status.set("Working out the file's fingerprint...")
+            self._run_job("lookup", path, lambda: current_sha256(path, digest))
+            return
         if digest:
+            # The file is gone, so its page is found by the hash recorded when FileSpy examined it.
             virustotal.open_url(virustotal.report_url(digest))
-            self.status.set(f"Opened the VirusTotal page of {sanitize.clean(os.path.basename(path), 120)}.")
+            self.status.set(f"{sanitize.clean(os.path.basename(path), 120)} is no longer on disk; opened the "
+                            "VirusTotal page of the content FileSpy recorded.")
             return
-        if not path or not os.path.isfile(path):
-            messagebox.showinfo("VirusTotal", "Select a file that is still on disk first.", parent=self.root)
-            return
-        self.status.set("Working out the file's fingerprint...")
-        self._run_job("lookup", path, lambda: virustotal.sha256_of(path))
+        messagebox.showinfo("VirusTotal", "Select a file that is still on disk first.", parent=self.root)
 
     def upload_virustotal(self) -> None:
         """Send the selected file to VirusTotal, after the user agrees, and show its analysis."""
@@ -984,7 +1025,7 @@ class MainWindow:
             f"Data folder: {self.ctl.data_dir}"), parent=self.root)
 
     def elevate(self) -> None:
-        if relaunch_as_admin(["--data-dir", str(self.ctl.data_dir), "--config", str(self.ctl.config_file)]):
+        if relaunch_as_admin(["--data-dir", os.path.abspath(self.ctl.data_dir), "--config", os.path.abspath(self.ctl.config_file)]):
             self.close()
 
     def close(self) -> None:
@@ -1033,12 +1074,16 @@ def needs_elevation(args: argparse.Namespace, platform: str = sys.platform, admi
 
 
 def forwarded_arguments(args: argparse.Namespace) -> list[str]:
-    """The window's options, handed to an elevated copy of it."""
-    out = []
-    if args.data_dir:
-        out += ["--data-dir", args.data_dir]
+    """The window's options, handed to an elevated copy of it.
+
+    The elevated copy does not get this process's environment (FILESPY_HOME, for one) or its
+    working folder, and it may even run as another account, so the data folder and settings
+    file are worked out here and passed on as full paths.
+    """
+    data = Path(args.data_dir).expanduser() if args.data_dir else default_data_dir()
+    out = ["--data-dir", os.path.abspath(data)]
     if args.config:
-        out += ["--config", args.config]
+        out += ["--config", os.path.abspath(Path(args.config).expanduser())]
     if args.start:
         out.append("--start")
     return out

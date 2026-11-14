@@ -83,9 +83,11 @@ def test_addresses_and_keys(monkeypatch):
 def test_only_virustotal_pages_are_opened(monkeypatch):
     opened = []
     monkeypatch.setattr(virustotal.webbrowser, "open", lambda url, new=0: opened.append(url) or True)
-    assert virustotal.open_url(virustotal.report_url("ab" * 32))
+    # The browser route, as on Linux and macOS (Windows goes through Explorer, checked below).
+    assert virustotal.open_url(virustotal.report_url("ab" * 32), platform="linux")
     for bad in ("https://evil.example/", "javascript:alert(1)", "file:///etc/passwd", "https://www.virustotal.com.evil.example/x"):
-        assert virustotal.open_url(bad) is False
+        assert virustotal.open_url(bad, platform="linux") is False
+        assert virustotal.open_url(bad, platform="win32") is False
     assert opened == ["https://www.virustotal.com/gui/file/" + "ab" * 32]
     launched = []
     monkeypatch.setattr(virustotal.subprocess, "Popen", lambda argv: launched.append(argv))
@@ -105,8 +107,17 @@ def test_hashing_refuses_links(tmp_path):
             virustotal.sha256_of(str(link))
 
 
+def test_upload_form_file_names_cannot_break_the_form():
+    assert virustotal._filename('we"ird\nname.exe') == "we_ird_name.exe"
+    assert virustotal._filename(os.path.join("folder", "setup.exe")) == "setup.exe"
+    assert virustotal._filename("") == "file"
+    if sys.platform != "win32":  # outside Windows a backslash can be part of a file name
+        assert virustotal._filename("/tmp/a\\b.exe") == "a_b.exe"
+
+
 def test_upload_sends_the_file_and_returns_its_page(tmp_path, fake_vt):
-    sample = tmp_path / 'we"ird\nname.exe'
+    # Windows does not allow quotes or line breaks in file names; elsewhere they are tested end to end.
+    sample = tmp_path / ("we ird name.exe" if sys.platform == "win32" else 'we"ird\nname.exe')
     content = b"MZ" + os.urandom(5000)
     sample.write_bytes(content)
     result = virustotal.upload(str(sample), "secret-key", base=fake_vt.base)
@@ -118,7 +129,8 @@ def test_upload_sends_the_file_and_returns_its_page(tmp_path, fake_vt):
     assert headers["content-type"].startswith("multipart/form-data; boundary=")
     boundary = headers["content-type"].split("boundary=")[1].encode()
     assert body.startswith(b"--" + boundary + b"\r\n") and body.endswith(b"\r\n--" + boundary + b"--\r\n")
-    assert content in body and b'filename="we_ird_name.exe"' in body  # characters that could break the form are replaced
+    expected = b"we ird name.exe" if sys.platform == "win32" else b"we_ird_name.exe"
+    assert content in body and b'filename="' + expected + b'"' in body  # characters that could break the form are replaced
 
 
 def test_large_files_use_a_separate_upload_address(tmp_path, fake_vt, monkeypatch):
@@ -182,10 +194,21 @@ def test_cli_vt_lookup_and_upload(tmp_path, capsys, monkeypatch, fake_vt):
     assert main(["--data-dir", home, "vt", str(sample), "--upload"]) == 0  # no key: upload page + folder window
     assert "No VirusTotal API key" in capsys.readouterr().out
     assert opened[-2:] == [virustotal.upload_page_url(), "reveal:s.exe"]
+    count = len(opened)
+    assert main(["--data-dir", home, "vt", str(sample), "--upload", "--no-browser"]) == 0  # print, open nothing
+    out = capsys.readouterr().out
+    assert virustotal.upload_page_url() in out and "s.exe" in out and len(opened) == count
 
     real_upload = virustotal.upload
     monkeypatch.setattr(virustotal, "upload", lambda path, key: real_upload(path, key, base=fake_vt.base))
+    # The key can be typed at a prompt that does not show it; it is never printed back.
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "typed-key")
+    assert main(["--data-dir", home, "config", "set", "detection.virustotal_api_key", "-"]) == 0
+    assert "typed-key" not in capsys.readouterr().out
+    assert main(["--data-dir", home, "config", "get", "detection.virustotal_api_key", "--secrets"]) == 0
+    assert "typed-key" in capsys.readouterr().out
     assert main(["--data-dir", home, "config", "set", "detection.virustotal_api_key", "k-123"]) == 0
+    assert "k-123" not in capsys.readouterr().out
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     assert main(["--data-dir", home, "vt", str(sample), "--upload"]) == 1  # said no
     assert not fake_vt.uploads

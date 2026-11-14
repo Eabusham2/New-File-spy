@@ -563,3 +563,61 @@ def test_ordinary_files_are_listed_once_not_on_every_edit(make_ctx, tmp_path):
     finally:
         monitor.stop()
         monitor.join()
+
+
+class _Desktop:
+    """A stand-in for a running program, as psutil.process_iter lists it."""
+
+    def __init__(self, name, user, environment=None):
+        self.info = {"name": name, "username": user}
+        self._environment = environment
+
+    def environ(self):
+        if self._environment is None:
+            raise PermissionError("access denied")
+        return self._environment
+
+
+def test_folders_of_other_people_signed_in_are_watched_too(make_ctx, tmp_path, monkeypatch):
+    """Elevated with another account's password, FileSpy still watches the signed-in person's folders."""
+    from filespy import paths
+
+    pat = {"USERPROFILE": r"C:\Users\pat", "TEMP": r"C:\Users\pat\AppData\Local\Temp",
+           "APPDATA": r"C:\Users\pat\AppData\Roaming", "LOCALAPPDATA": r"C:\Users\pat\AppData\Local", "PATH": "x"}
+    processes = [
+        _Desktop("explorer.exe", "PC\\admin", {"USERPROFILE": r"C:\Users\admin"}),  # FileSpy's own account
+        _Desktop("Explorer.EXE", "PC\\pat", pat),
+        _Desktop("explorer.exe", "PC\\Pat", pat),  # the same person twice
+        _Desktop("explorer.exe", "PC\\sam"),  # cannot be read: skipped, not an error
+        _Desktop("notepad.exe", "PC\\lee", {"USERPROFILE": r"C:\Users\lee"}),
+    ]
+    users = paths.signed_in_users("win32", processes, me="pc\\ADMIN")
+    assert users == [("PC\\pat", {k: v for k, v in pat.items() if k != "PATH"})]
+    assert paths.signed_in_users("linux", processes, me="x") == []
+
+    def broken():
+        raise RuntimeError("process list unavailable")
+        yield
+
+    assert paths.signed_in_users("win32", broken(), me="x") == []
+    roots = paths.all_default_roots("win32", users)
+    assert r"C:\Users\pat\Downloads" in roots and r"C:\Users\pat\AppData\Local\Temp" in roots
+    assert len(roots) == len({r.replace("\\", "/").lower() for r in roots})  # no folder twice
+
+    # The monitor watches them and says so.
+    theirs = tmp_path / "pat"
+    (theirs / "Downloads").mkdir(parents=True)
+    monkeypatch.setattr("filespy.monitors.files.signed_in_users", lambda platform: [("PC\\pat", {"USERPROFILE": str(theirs)})])
+    monkeypatch.setattr("filespy.monitors.files.all_default_roots", lambda platform, users: [str(theirs / "Downloads")])
+    ctx = make_ctx()
+    ctx.config.files.paths = []
+    ctx.config.files.use_default_paths = True
+    monitor = FileMonitor(ctx)
+    monitor.start()
+    try:
+        assert monitor.ready.wait(10) and not monitor.failed
+        assert monitor.roots == [str(theirs / "Downloads")]
+        assert any("PC\\pat" in e.title for e in ctx.bus.find("system"))
+    finally:
+        monitor.stop()
+        monitor.join()

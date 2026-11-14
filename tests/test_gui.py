@@ -1,3 +1,4 @@
+import hashlib
 import os
 import time
 
@@ -199,7 +200,37 @@ def test_file_list_keeps_one_row_per_file_with_its_latest_state(tmp_path):
     assert "\u202e" not in "".join(hostile.row())
 
 
-def test_elevation_is_only_asked_for_on_windows_when_needed():
+def test_file_list_follows_a_renamed_file(tmp_path):
+    files = gui.FileList()
+    part, final = tmp_path / "payload.tmp", tmp_path / "payload.exe"
+    files.note(file_event(part, kind="data"))
+    renamed = file_event(final, "renamed")
+    renamed.details["renamed_from"] = str(part)
+    entry = files.note(renamed)
+    assert list(files.items) == [gui.FileList.key(str(final))]  # no row is left for the old name
+    assert entry.path == str(final) and entry.renamed_from == str(part) and entry.history == ["New", "Renamed"]
+    files.note(file_event(part, kind="text"))  # a new file that takes the old name is a file of its own
+    assert len(files.items) == 2 and files.get(str(part)).history == ["New"]
+
+
+def test_lookups_use_the_file_as_it_is_now(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_bytes(b"rewritten")
+    assert gui.current_sha256(str(target), "ab" * 32) == hashlib.sha256(b"rewritten").hexdigest()
+    assert gui.current_sha256(str(tmp_path / "gone"), "ab" * 32) == "ab" * 32  # gone: the recorded hash
+    with pytest.raises(OSError):
+        gui.current_sha256(str(tmp_path / "gone"))
+
+
+def test_the_elevated_window_starts_without_a_console(tmp_path):
+    (tmp_path / "python.exe").write_bytes(b"")
+    assert gui.windowed_python(str(tmp_path / "python.exe")) == str(tmp_path / "python.exe")  # no pythonw.exe there
+    (tmp_path / "pythonw.exe").write_bytes(b"")
+    assert gui.windowed_python(str(tmp_path / "python.exe")) == str(tmp_path / "pythonw.exe")
+    assert gui.windowed_python(str(tmp_path / "FileSpy.exe")) == str(tmp_path / "FileSpy.exe")
+
+
+def test_elevation_is_only_asked_for_on_windows_when_needed(tmp_path, monkeypatch):
     import argparse
 
     def args(**kw):
@@ -213,8 +244,11 @@ def test_elevation_is_only_asked_for_on_windows_when_needed():
     assert not gui.needs_elevation(args(), "linux", admin=False)
     for flag in ("no_elevate", "elevated", "selftest", "smoke_gui"):
         assert not gui.needs_elevation(args(**{flag: True}), "win32", admin=False)
-    assert gui.forwarded_arguments(args(data_dir="D", config="C", start=True)) == ["--data-dir", "D", "--config", "C", "--start"]
-    assert gui.forwarded_arguments(args()) == []
+    forwarded = gui.forwarded_arguments(args(data_dir="D", config="C", start=True))
+    assert forwarded == ["--data-dir", os.path.abspath("D"), "--config", os.path.abspath("C"), "--start"]
+    # The elevated copy gets a fresh environment, so the data folder is worked out here and passed on.
+    monkeypatch.setenv("FILESPY_HOME", str(tmp_path / "home"))
+    assert gui.forwarded_arguments(args()) == ["--data-dir", str(tmp_path / "home")]
     if os.name != "nt":
         assert gui.relaunch_as_admin(["--start"]) is False
 
@@ -244,8 +278,10 @@ def test_files_tab_lists_every_file_and_offers_virustotal(window, monkeypatch):
     main_window.files_tree.selection_set(names["tool.exe"])
     root.update()
     assert main_window.on_files_tab() and "Status: New" in main_window.details.get("1.0", "end")
-    main_window.lookup_virustotal()  # the hash is known: opens straight away, nothing is sent
-    assert opened and opened[-1].startswith("https://www.virustotal.com/gui/file/")
+    main_window.lookup_virustotal()  # hashes the file as it is now; only the hash leaves the computer
+    assert pump(root, lambda: not main_window.jobs, 10)
+    tool_hash = hashlib.sha256((watched / "tool.exe").read_bytes()).hexdigest()
+    assert opened and opened[-1] == "https://www.virustotal.com/gui/file/" + tool_hash
     main_window.copy_path()
     assert root.clipboard_get().endswith("tool.exe")
 
@@ -276,6 +312,14 @@ def test_files_tab_lists_every_file_and_offers_virustotal(window, monkeypatch):
     main_window.files_tree.selection_set(item)
     root.update()
     assert main_window._selected_sha256() and main_window._selected_path().endswith("notes.txt")
+    listed = main_window._selected_sha256()
+    (watched / "notes.txt").write_bytes(b"rewritten after it was listed")  # an ordinary edit adds no new row
+    main_window.lookup_virustotal()
+    assert pump(root, lambda: not main_window.jobs, 10)
+    assert opened[-1].endswith("/" + hashlib.sha256(b"rewritten after it was listed").hexdigest())
+    os.remove(watched / "notes.txt")
+    main_window.lookup_virustotal()  # gone: the page of the content FileSpy recorded
+    assert opened[-1].endswith("/" + listed) and "no longer on disk" in main_window.status.get()
     assert main_window.menu.index("end") >= 6 and main_window.vt_menu.index("end") == 1
 
     dialog = main_window.settings()
