@@ -207,6 +207,18 @@ def test_cli_vt_lookup_and_upload(tmp_path, capsys, monkeypatch, fake_vt):
     assert "typed-key" not in capsys.readouterr().out
     assert main(["--data-dir", home, "config", "get", "detection.virustotal_api_key", "--secrets"]) == 0
     assert "typed-key" in capsys.readouterr().out
+    for typed in ("", EOFError):  # nothing typed, or no input at all: an error, and the key stays as it was
+
+        def prompt(prompt="", typed=typed):
+            if typed is EOFError:
+                raise EOFError
+            return typed
+
+        monkeypatch.setattr("getpass.getpass", prompt)
+        assert main(["--data-dir", home, "config", "set", "detection.virustotal_api_key", "-"]) == 2
+        assert "not changed" in capsys.readouterr().err
+    assert main(["--data-dir", home, "config", "get", "detection.virustotal_api_key", "--secrets"]) == 0
+    assert "typed-key" in capsys.readouterr().out
     assert main(["--data-dir", home, "config", "set", "detection.virustotal_api_key", "k-123"]) == 0
     assert "k-123" not in capsys.readouterr().out
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")

@@ -416,7 +416,12 @@ def cmd_config(args: argparse.Namespace) -> int:
             # Typed at a prompt that does not show it, so it stays out of the screen and the shell history.
             import getpass
 
-            value = getpass.getpass(f"{args.key}: ")
+            try:
+                value = getpass.getpass(f"{args.key}: ").strip()
+            except EOFError:
+                value = ""
+            if not value:
+                raise ValueError(f"nothing was typed, so {args.key} was not changed")
         cfg.set(args.key, value)
         save_config(cfg, cfg_file)
         _out(f"{args.key} = {shown(args.key)}")
