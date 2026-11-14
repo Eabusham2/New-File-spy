@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 
 from filespy import fileinfo
 from filespy.analyzer import WINDOWS_SYSTEM_NAMES, name_indicators
 from filespy.events import Indicator, Severity
-from filespy.paths import basename, classify_location
+from filespy.paths import basename, classify_location, is_excluded
 from filespy.state import SharedState
 
 MAX_CMDLINE = 8192
@@ -54,17 +55,19 @@ def _r(id: str, score: int, platforms: str, pattern: str, description: str, mitr
 
 
 _PS = r"\b(?:powershell|pwsh)(?:\.exe)?\b"
+#: Switch prefix. PowerShell and most Windows tools also accept the en dash, em dash and horizontal bar.
+_D = "[-/\u2013\u2014\u2015]"
 _SECURITY = (r"(?:windefend|wscsvc|securityhealth|mpssvc|msmpeng|sense\b|sysmon|mbam|avast|avg|kaspersky|"
              r"bitdefender|eset|sophos|mcafee|norton|malwarebytes)")
 _USERDIR = r"(?:\\appdata\\|\\temp\\|\\downloads\\|\\programdata\\|\\users\\public\\)"
 
 CMD_RULES: tuple[CmdRule, ...] = (
     # ---- Windows -------------------------------------------------------------------------
-    _r("ps_encoded", 60, "win", _PS + r".{0,400}?\s[-/](?:e|ec|en|enc|enco\w*)\s+[\"']?[A-Za-z0-9+/=]{16,}",
+    _r("ps_encoded", 60, "win", _PS + r".{0,400}?\s" + _D + r"(?:e|ec|en|enc|enco\w*)\s+[\"']?[A-Za-z0-9+/=]{16,}",
        "PowerShell was started with a hidden, base64-encoded command", "T1059.001"),
     _r("ps_hidden_bypass", 45, "win",
-       _PS + r"(?=.{0,400}\s[-/]w(?:in(?:dowstyle)?)?\s+h(?:id(?:den)?)?\b)"
-       r"(?=.{0,400}(?:\s[-/](?:ep|ex(?:ec(?:utionpolicy)?)?)\s+(?:bypass|unrestricted)|\s[-/]nop(?:rofile)?\b))",
+       _PS + r"(?=.{0,400}\s" + _D + r"w(?:in(?:dowstyle)?)?\s+(?:h(?:id(?:den)?)?|1)\b)"
+       r"(?=.{0,400}(?:\s" + _D + r"(?:ep|ex(?:ec(?:utionpolicy)?)?)\s+(?:bypass|unrestricted)|\s" + _D + r"nop(?:rofile)?\b))",
        "PowerShell was started hidden with its safety policy bypassed", "T1059.001"),
     _r("ps_download", 50, "win",
        _PS + r".{0,600}(?:downloadstring|downloadfile|downloaddata|invoke-webrequest|\biwr\b|invoke-restmethod|"
@@ -73,7 +76,7 @@ CMD_RULES: tuple[CmdRule, ...] = (
     _r("ps_decode_run", 40, "win", _PS + r".{0,600}frombase64string",
        "PowerShell is decoding hidden content", "T1027"),
     _r("defender_tamper", 80, "win",
-       r"(?:set-mppreference\b.{0,200}-disable\w+\s+(?:\$?true|1)\b|add-mppreference\b.{0,200}-exclusion(?:path|process|extension))",
+       r"(?:set-mppreference\b.{0,200}" + _D + r"disable\w+\s+(?:\$?true|1)\b|add-mppreference\b.{0,200}" + _D + r"exclusion(?:path|process|extension))",
        "A command is switching off Microsoft Defender or adding an exclusion", "T1562.001", H),
     _r("mshta_remote", 70, "win", r"\bmshta(?:\.exe)?[\"']?\s+.{0,60}(?:https?://|javascript:|vbscript:)",
        "mshta is running script from the internet or from its command line", "T1218.005"),
@@ -83,14 +86,14 @@ CMD_RULES: tuple[CmdRule, ...] = (
        r"\brundll32(?:\.exe)?\b.{0,200}(?:javascript:|vbscript:|url\.dll\s*,\s*(?:fileprotocolhandler|openurl)|"
        r"shell32(?:\.dll)?\s*,\s*shellexec_rundll|comsvcs(?:\.dll)?[\s,]+(?:#24|minidump))",
        "rundll32 is being used to run script or dump memory", "T1218.011"),
-    _r("certutil_download", 60, "win", r"\bcertutil(?:\.exe)?\b.{0,200}[-/](?:urlcache|verifyctl)\b",
+    _r("certutil_download", 60, "win", r"\bcertutil(?:\.exe)?\b.{0,200}" + _D + r"(?:urlcache|verifyctl)\b",
        "certutil is being used to download a file", "T1105"),
-    _r("certutil_decode", 35, "win", r"\bcertutil(?:\.exe)?\b.{0,200}[-/]decode(?:hex)?\b",
+    _r("certutil_decode", 35, "win", r"\bcertutil(?:\.exe)?\b.{0,200}" + _D + r"decode(?:hex)?\b",
        "certutil is decoding a hidden file", "T1140"),
-    _r("bitsadmin_transfer", 55, "win", r"\bbitsadmin(?:\.exe)?\b.{0,200}/(?:transfer|addfile|setnotifycmdline)\b",
+    _r("bitsadmin_transfer", 55, "win", r"\bbitsadmin(?:\.exe)?\b.{0,200}" + _D + r"(?:transfer|addfile|setnotifycmdline)\b",
        "bitsadmin is being used to download or run a file", "T1197"),
     _r("wmic_exec", 55, "win",
-       r"\bwmic(?:\.exe)?\b.{0,200}(?:process\s+call\s+create|/format:\s*[\"']?(?:https?://|\\\\))",
+       r"\bwmic(?:\.exe)?\b.{0,200}(?:process\s+call\s+create|" + _D + r"format:\s*[\"']?(?:https?://|\\\\))",
        "WMIC is being used to start a program or load a remote stylesheet", "T1047"),
     _r("shadow_delete", 85, "win",
        r"(?:\bvssadmin(?:\.exe)?\b.{0,100}delete\s+shadows|\bwmic(?:\.exe)?\b.{0,100}shadowcopy\b.{0,50}delete|"
@@ -100,9 +103,9 @@ CMD_RULES: tuple[CmdRule, ...] = (
     _r("log_clear", 60, "win", r"(?:\bwevtutil(?:\.exe)?\s+(?:cl|clear-log)\b|\bclear-eventlog\b|\bfsutil(?:\.exe)?\s+usn\s+deletejournal)",
        "Windows event logs are being erased", "T1070.001"),
     _r("schtasks_create_suspicious", 60, "win",
-       r"\bschtasks(?:\.exe)?\b.{0,300}/create\b.{0,500}(?:" + _USERDIR + r"|powershell|mshta|wscript|cscript|cmd(?:\.exe)?\s+/c|rundll32|regsvr32)",
+       r"\bschtasks(?:\.exe)?\b.{0,300}" + _D + r"create\b.{0,500}(?:" + _USERDIR + r"|powershell|mshta|wscript|cscript|cmd(?:\.exe)?\s+/c|rundll32|regsvr32)",
        "A scheduled task is being created that runs a script host or a program from a user folder", "T1053.005"),
-    _r("schtasks_create", 30, "win", r"\bschtasks(?:\.exe)?\b.{0,300}/create\b",
+    _r("schtasks_create", 30, "win", r"\bschtasks(?:\.exe)?\b.{0,300}" + _D + r"create\b",
        "A scheduled task is being created", "T1053.005"),
     _r("reg_persistence", 55, "win",
        r"\breg(?:\.exe)?\s+add\b.{0,300}(?:\\currentversion\\(?:run|runonce|policies\\explorer\\run)\b|\\winlogon\b|image file execution options)",
@@ -221,12 +224,27 @@ def lookalike_of(name: str) -> str:
     return ""
 
 
+def birth_time(info: os.stat_result, platform: str = sys.platform) -> float | None:
+    """When the file was created, if the system records it; None if it does not.
+
+    Linux keeps no creation time that ``os.stat`` can read (its ctime changes whenever the
+    file's metadata does), so there a changed old program cannot be told from a new one.
+    """
+    birth = getattr(info, "st_birthtime", None)
+    if birth:
+        return float(birth)
+    if platform == "win32":
+        return float(info.st_ctime)  # creation time on Windows before Python 3.12
+    return None
+
+
 def _created_since(path: str, moment: float) -> bool:
     try:
         info = os.stat(path)
     except (OSError, ValueError):
         return False
-    return max(info.st_ctime, info.st_mtime) >= moment
+    birth = birth_time(info)
+    return birth is not None and birth >= moment
 
 
 def _platform_tag(platform: str) -> set[str]:
@@ -258,8 +276,13 @@ def evaluate(
     state: SharedState | None = None,
     young_minutes: float = 15.0,
     now: float | None = None,
+    exclude: tuple[str, ...] | list[str] = (),
 ) -> list[Indicator]:
-    """Every reason this newly started process looks suspicious (empty for a normal one)."""
+    """Every reason this newly started process looks suspicious (empty for a normal one).
+
+    ``exclude`` holds the folders the user told FileSpy to ignore (``files.exclude``); a program
+    created there is not treated as a drop unless the file monitor reported it anyway.
+    """
     out = command_indicators(proc.command, platform)
     name = (proc.name or basename(proc.exe)).lower()
     parent = proc.parent_name.lower()
@@ -268,7 +291,7 @@ def evaluate(
 
     drop = state.lookup_drop(exe.removesuffix(" (deleted)")) if exe and state is not None else None
     dropped = drop is not None
-    if not dropped and state is not None and exe and location not in ("system", "program"):
+    if not dropped and state is not None and exe and location not in ("system", "program") and not is_excluded(exe, exclude):
         # The file monitor may not have reported it yet (or the folder is not watched):
         # a program file created after FileSpy started is a drop all the same.
         dropped = _created_since(exe, state.started)
@@ -297,7 +320,8 @@ def evaluate(
             # A dropped script is run by an interpreter, so it shows up as an argument, not as the image.
             if len(argument) > 2 and os.path.isabs(argument) and (
                 state.lookup_drop(argument) is not None
-                or (fileinfo.extension(argument) in fileinfo.RISKY_EXTS and _created_since(argument, state.started))
+                or (fileinfo.extension(argument) in fileinfo.RISKY_EXTS and not is_excluded(argument, exclude)
+                    and _created_since(argument, state.started))
             ):
                 record = state.lookup_drop(argument)
                 score = record.score if record is not None else 0

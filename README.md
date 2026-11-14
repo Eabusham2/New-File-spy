@@ -229,6 +229,11 @@ The rules are data, not code: see `src/filespy/data/rules.json` and
 - Malware that already controls the machine can hide from, or stop, any tool running at
   the same privilege level, including this one.
 - A network port number is weak evidence; port matches only add to other findings.
+- A pipeline typed in a terminal, such as `curl ... | bash`, runs as separate programs, so it
+  is not recognised as a pipeline. What it then drops, runs or installs is still reported.
+- Programs you build yourself count as dropped files when they appear in a watched folder.
+  Each one raises one alert per build, not one per run; add your project folders to
+  `files.exclude` to silence them.
 - On Windows, a very large burst of file activity can overflow the system's change buffer
   and some file events may be lost.
 - Without administrator rights, other users' processes and some system locations are not
