@@ -407,3 +407,133 @@ def test_partial_polling_scan_is_announced(make_ctx, tmp_path, monkeypatch):
     finally:
         monitor.stop()
         monitor.join()
+
+
+def fake_winapi(complete=True, with_reader=True):
+    """Stand-in for watchdog.observers.winapi, which only imports on Windows."""
+    import queue as queue_module
+    import types
+
+    module = types.ModuleType("watchdog.observers.winapi")
+
+    class NativeEvent:
+        def __init__(self, action, src_path, is_attrib=False):
+            self.action, self.src_path, self.is_attrib = action, src_path, is_attrib
+
+    module.WinAPINativeEvent = NativeEvent
+    module._parse_event_buffer = lambda buf: [(1, name) for name in buf.decode().split(",")]
+    if complete:
+        module._parse_extended_event_buffer = lambda buf: [(3, name, True) for name in buf.decode().split(",")]
+    module._drop_case_only_rename_deletions = lambda events: events
+
+    if with_reader:
+        class DirectoryChangeReader:
+            def __init__(self):
+                self._buf_queue = queue_module.Queue()
+
+            def get_events(self, timeout):  # what watchdog 7.1 does
+                events = []
+                while True:
+                    try:
+                        buf, is_extended = self._buf_queue.get(timeout=timeout)
+                    except queue_module.Empty:
+                        break
+                    if buf:
+                        events.extend(module._parse_event_buffer(buf))
+                return events
+
+        module.DirectoryChangeReader = DirectoryChangeReader
+    return module
+
+
+def feed(reader, stop, interval=0.05):
+    count = 0
+    while not stop.wait(interval):
+        count += 1
+        reader._buf_queue.put((f"file{count}".encode(), False))
+
+
+def test_windows_reader_hands_over_events_while_the_folder_stays_busy(monkeypatch):
+    import sys
+    import threading
+
+    from filespy.monitors.files import fix_watchdog_windows_reader
+
+    module = fake_winapi()
+    monkeypatch.setitem(sys.modules, "watchdog.observers.winapi", module)
+    original = module.DirectoryChangeReader.get_events
+
+    # The problem: with changes arriving every 50 ms, watchdog 7.1 never returns from get_events.
+    starved, stop = module.DirectoryChangeReader(), threading.Event()
+    producer = threading.Thread(target=feed, args=(starved, stop), daemon=True)
+    producer.start()
+    result = []
+    consumer = threading.Thread(target=lambda: result.append(original(starved, 0.5)), daemon=True)
+    consumer.start()
+    consumer.join(1.5)
+    assert consumer.is_alive(), "the fake no longer reproduces watchdog 7.1's behaviour"
+    stop.set()
+    consumer.join(5)
+    producer.join(5)
+
+    # The fix: the same busy stream hands over events within a fraction of a second.
+    assert fix_watchdog_windows_reader() is True
+    assert module.DirectoryChangeReader.get_events._filespy_prompt
+    assert fix_watchdog_windows_reader() is True  # applying it twice changes nothing
+    reader, stop = module.DirectoryChangeReader(), threading.Event()
+    producer = threading.Thread(target=feed, args=(reader, stop), daemon=True)
+    producer.start()
+    try:
+        started = time.monotonic()
+        events = reader.get_events(1.0)
+        assert events and time.monotonic() - started < 0.5
+    finally:
+        stop.set()
+        producer.join(5)
+
+    quiet = module.DirectoryChangeReader()
+    assert quiet.get_events(0.05) == []
+    quiet._buf_queue.put((b"", False))  # the marker the reader thread sends when it starts
+    quiet._buf_queue.put((b"a,b", False))
+    quiet._buf_queue.put((b"c", True))
+    found = [(e.action, e.src_path, e.is_attrib) for e in quiet.get_events(0.05)]
+    assert found == [(1, "a", False), (1, "b", False), (3, "c", True)]
+
+
+def test_windows_reader_fix_on_other_watchdog_versions(monkeypatch):
+    import sys
+
+    from filespy.monitors.files import fix_watchdog_windows_reader
+
+    monkeypatch.setitem(sys.modules, "watchdog.observers.winapi", fake_winapi(with_reader=False))
+    assert fix_watchdog_windows_reader() is True  # watchdog 6: nothing to fix
+    monkeypatch.setitem(sys.modules, "watchdog.observers.winapi", fake_winapi(complete=False))
+    assert fix_watchdog_windows_reader() is False  # unknown layout: do not rely on real-time watching
+    monkeypatch.setitem(sys.modules, "watchdog.observers.winapi", None)  # the import fails (not Windows)
+    assert fix_watchdog_windows_reader() is True
+
+
+def test_continuous_activity_does_not_hide_a_new_drop(running):
+    """A folder that never goes quiet (Temp, AppData) must still report a new program promptly."""
+    import threading
+
+    ctx, _monitor, watched = running
+    busy = watched / "busy.tmp"
+    stop = threading.Event()
+
+    def churn():
+        count = 0
+        while not stop.wait(0.1):
+            count += 1
+            busy.write_text(str(count))
+
+    churner = threading.Thread(target=churn, daemon=True)
+    churner.start()
+    try:
+        time.sleep(1.5)
+        (watched / "late.exe").write_bytes(make_pe())
+        assert wait_for(lambda: [e for e in file_events(ctx) if "late.exe" in e.subject], 10), \
+            "a drop in a busy folder was not reported"
+    finally:
+        stop.set()
+        churner.join(5)

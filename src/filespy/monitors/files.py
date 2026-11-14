@@ -8,6 +8,7 @@ recognise it later.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import queue
@@ -16,6 +17,7 @@ from collections import Counter, OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any
 
 from filespy import fileinfo, sanitize
 from filespy.analyzer import FileReport
@@ -31,6 +33,66 @@ except ImportError:  # pragma: no cover - exercised only without the dependency
     Observer = None  # type: ignore[assignment]
 
 log = logging.getLogger("filespy")
+
+WINAPI_HELPERS = ("_parse_event_buffer", "_parse_extended_event_buffer", "WinAPINativeEvent", "_drop_case_only_rename_deletions")
+MAX_BATCHES = 256
+
+
+def prompt_get_events(winapi: Any) -> Callable[[Any, float], list[Any]]:
+    """A replacement for ``DirectoryChangeReader.get_events`` in watchdog 7 on Windows.
+
+    watchdog 7 keeps collecting change notifications until the folder has been quiet for
+    ``timeout`` seconds (one second by default) and only then hands them over. A folder that
+    changes more often than that, such as Temp or AppData on a working PC, therefore never
+    hands over anything. This version waits up to ``timeout`` for the first batch, then
+    takes only what has already arrived and returns.
+    """
+
+    def get_events(self: Any, timeout: float) -> list[Any]:
+        try:
+            batches = [self._buf_queue.get(timeout=timeout)]
+        except queue.Empty:
+            return []
+        while len(batches) < MAX_BATCHES:
+            try:
+                batches.append(self._buf_queue.get_nowait())
+            except queue.Empty:
+                break
+        events: list[Any] = []
+        for buf, is_extended in batches:
+            if not buf:
+                continue
+            if is_extended:
+                for action, src_path, is_attrib in winapi._parse_extended_event_buffer(buf):
+                    events.append(winapi.WinAPINativeEvent(action, src_path, is_attrib=is_attrib))
+            else:
+                for action, src_path in winapi._parse_event_buffer(buf):
+                    events.append(winapi.WinAPINativeEvent(action, src_path, is_attrib=False))
+        return winapi._drop_case_only_rename_deletions(events)
+
+    get_events._filespy_prompt = True  # type: ignore[attr-defined]
+    return get_events
+
+
+def fix_watchdog_windows_reader() -> bool:
+    """Make watchdog's Windows reader hand over events promptly.
+
+    Returns False only when this watchdog's Windows reader is of a kind that cannot be
+    fixed, in which case real-time watching on Windows must not be relied on.
+    """
+    try:
+        winapi = importlib.import_module("watchdog.observers.winapi")
+    except Exception:  # noqa: BLE001 - not Windows, or a watchdog without this module: nothing to fix
+        return True
+    reader = getattr(winapi, "DirectoryChangeReader", None)
+    if reader is None:
+        return True  # watchdog 6 and earlier hand over every batch as it arrives
+    if getattr(reader.get_events, "_filespy_prompt", False):
+        return True
+    if not all(hasattr(winapi, name) for name in WINAPI_HELPERS):
+        return False
+    reader.get_events = prompt_get_events(winapi)
+    return True
 
 KIND_LABELS = {
     "pe": "program", "elf": "program", "macho": "program", "script": "script", "lnk": "shortcut",
@@ -228,6 +290,11 @@ class FileMonitor(Monitor):
                 winapi.WATCHDOG_FILE_NOTIFY_FLAGS &= ~0x20  # FILE_NOTIFY_CHANGE_LAST_ACCESS
             except Exception:  # noqa: BLE001 - internal detail of watchdog; the settle logic copes without it
                 log.debug("could not adjust watchdog notify flags", exc_info=True)
+            if not fix_watchdog_windows_reader():
+                self.system("warning", "This version of watchdog can hold back file events while a folder stays busy, "
+                                       "so folders are checked by polling instead. Install watchdog 6 "
+                                       "(pip install \"watchdog<7\") for real-time watching.", Severity.LOW)
+                return list(self.roots)
         try:
             observer = Observer()
             observer.start()
