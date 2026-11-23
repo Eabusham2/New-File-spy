@@ -318,6 +318,11 @@ pyinstaller --onefile --windowed --name FileSpy --collect-data filespy packaging
 pyinstaller --onefile --console --name filespy-cli --collect-data filespy packaging/filespy_cli.py
 ```
 
-Topics: security, malware-detection, malware-analysis, file-monitoring, persistence-detection,
-autoruns, process-monitoring, rat-detection, threat-detection, blue-team, dfir,
-incident-response, endpoint-security, host-monitoring, windows, linux, macos, python.
+## Search keywords (ignore)
+
+`security`, `malware-detection`, `malware-analysis`, `file-monitoring`, `persistence-detection`, `autoruns`,
+`process-monitoring`, `rat-detection`, `threat-detection`, `blue-team`, `dfir`, `incident-response`,
+`endpoint-security`, `host-monitoring`, `windows`, `linux`, `macos`, `python`,
+`filespy`, `file-watcher`, `filesystem-events`, `startup-monitoring`, `registry-monitoring`, `security-settings`,
+`network-monitoring`, `file-hashing`, `sha256`, `virustotal`, `yara`, `file-quarantine`,
+`event-correlation`, `desktop-notifications`, `html-report`, `csv-export`, `json-lines`, `command-line`
